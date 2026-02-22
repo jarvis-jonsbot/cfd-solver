@@ -15,7 +15,7 @@ dependencies = [
 
 [project.optional-dependencies]
 gpu = ["cupy-cuda12x>=12.0"]
-dev = ["pytest>=7.0", "ruff>=0.4", "mypy>=1.10", "numpy-stubs>=1.0; python_version>='3.10'"]
+dev = ["pytest>=7.0", "ruff>=0.4", "mypy>=1.10"]
 
 [tool.ruff]
 target-version = "py39"
