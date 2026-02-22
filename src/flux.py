@@ -3,10 +3,11 @@
 Computes the numerical flux at cell interfaces using Roe-averaged states
 with Harten's entropy fix.
 """
+
 from __future__ import annotations
 
 from src.backend import xp
-from src.gas import GAMMA, pressure, sound_speed, enthalpy
+from src.gas import GAMMA, enthalpy, pressure, sound_speed
 
 
 def roe_flux_1d(QL, QR, nx, ny):
@@ -26,7 +27,7 @@ def roe_flux_1d(QL, QR, nx, ny):
     uL = QL[1] / rhoL
     vL = QL[2] / rhoL
     pL = pressure(QL)
-    aL = sound_speed(rhoL, pL)
+    aL = sound_speed(rhoL, pL)  # noqa: F841 — kept for clarity
     HL = enthalpy(QL)
     vnL = uL * nx + vL * ny
 
@@ -35,7 +36,7 @@ def roe_flux_1d(QL, QR, nx, ny):
     uR = QR[1] / rhoR
     vR = QR[2] / rhoR
     pR = pressure(QR)
-    aR = sound_speed(rhoR, pR)
+    aR = sound_speed(rhoR, pR)  # noqa: F841 — kept for clarity
     HR = enthalpy(QR)
     vnR = uR * nx + vR * ny
 
@@ -81,15 +82,21 @@ def roe_flux_1d(QL, QR, nx, ny):
     # Build dissipation term: sum of |lambda_k| * alpha_k * r_k
     # Use list-of-arrays approach to avoid shape issues
     d0 = lam1 * alpha1 + lam2 * alpha2 + lam3 * alpha3
-    d1 = (lam1 * alpha1 * (u_roe - a_roe * nx) +
-          lam2 * (alpha2 * u_roe + rho_roe * dvt_x) +
-          lam3 * alpha3 * (u_roe + a_roe * nx))
-    d2 = (lam1 * alpha1 * (v_roe - a_roe * ny) +
-          lam2 * (alpha2 * v_roe + rho_roe * dvt_y) +
-          lam3 * alpha3 * (v_roe + a_roe * ny))
-    d3 = (lam1 * alpha1 * (H_roe - a_roe * vn_roe) +
-          lam2 * (alpha2 * 0.5 * q2 + rho_roe * (u_roe * dvt_x + v_roe * dvt_y)) +
-          lam3 * alpha3 * (H_roe + a_roe * vn_roe))
+    d1 = (
+        lam1 * alpha1 * (u_roe - a_roe * nx)
+        + lam2 * (alpha2 * u_roe + rho_roe * dvt_x)
+        + lam3 * alpha3 * (u_roe + a_roe * nx)
+    )
+    d2 = (
+        lam1 * alpha1 * (v_roe - a_roe * ny)
+        + lam2 * (alpha2 * v_roe + rho_roe * dvt_y)
+        + lam3 * alpha3 * (v_roe + a_roe * ny)
+    )
+    d3 = (
+        lam1 * alpha1 * (H_roe - a_roe * vn_roe)
+        + lam2 * (alpha2 * 0.5 * q2 + rho_roe * (u_roe * dvt_x + v_roe * dvt_y))
+        + lam3 * alpha3 * (H_roe + a_roe * vn_roe)
+    )
 
     diss = xp.stack([d0, d1, d2, d3], axis=0)
 

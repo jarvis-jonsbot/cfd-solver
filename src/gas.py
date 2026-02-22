@@ -3,6 +3,7 @@
 Convention: Q = [rho, rho*u, rho*v, rho*E]  (conservative variables)
 Primitive:  W = [rho, u, v, p]
 """
+
 from __future__ import annotations
 
 from src.backend import xp

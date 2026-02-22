@@ -3,6 +3,7 @@
 Reconstructs left and right states at cell interfaces from cell-centered
 values using piecewise-linear reconstruction with TVD limiters.
 """
+
 from __future__ import annotations
 
 from src.backend import xp
@@ -49,16 +50,16 @@ def muscl_reconstruct(Q, axis: int, limiter=van_leer_limiter):
         s[dim] = slice(start, stop)
         return tuple(s)
 
-    Qim1 = Q[_sl(0, n - 3)]    # i-1
-    Qi = Q[_sl(1, n - 2)]      # i
-    Qip1 = Q[_sl(2, n - 1)]    # i+1
-    Qip2 = Q[_sl(3, n)]        # i+2
+    Qim1 = Q[_sl(0, n - 3)]  # i-1
+    Qi = Q[_sl(1, n - 2)]  # i
+    Qip1 = Q[_sl(2, n - 1)]  # i+1
+    Qip2 = Q[_sl(3, n)]  # i+2
 
     # Forward and backward differences
-    dQf = Qip1 - Qi        # forward diff at i
-    dQb = Qi - Qim1        # backward diff at i
-    dQf2 = Qip2 - Qip1     # forward diff at i+1
-    dQb2 = Qip1 - Qi       # backward diff at i+1
+    dQf = Qip1 - Qi  # forward diff at i
+    dQb = Qi - Qim1  # backward diff at i
+    dQf2 = Qip2 - Qip1  # forward diff at i+1
+    dQb2 = Qip1 - Qi  # backward diff at i+1
 
     # Slope ratios (regularized to avoid division by zero)
     eps = 1e-12
@@ -72,7 +73,7 @@ def muscl_reconstruct(Q, axis: int, limiter=van_leer_limiter):
     phi_R = limiter(r_R)
 
     # Reconstructed states at i+1/2 interface (between Qi and Qip1)
-    QL = Qi + 0.5 * phi_L * dQf       # left state
-    QR = Qip1 - 0.5 * phi_R * dQb2    # right state
+    QL = Qi + 0.5 * phi_L * dQf  # left state
+    QR = Qip1 - 0.5 * phi_R * dQb2  # right state
 
     return QL, QR

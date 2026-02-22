@@ -5,16 +5,17 @@ Usage:
     python scripts/visualize.py --input output/solution_final.npz
     python scripts/visualize.py --input output/solution_final.npz --field mach --save
 """
+
 from __future__ import annotations
 
 import argparse
-import sys
 import os
+import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import numpy as np
 import matplotlib.pyplot as plt
+import numpy as np
 from matplotlib.patches import Circle
 
 from src.gas import GAMMA
@@ -79,8 +80,9 @@ def load_and_plot(filepath: str, field: str = "pressure", save: bool = False):
 def main():
     parser = argparse.ArgumentParser(description="CFD Solution Visualization")
     parser.add_argument("--input", required=True, help="Solution .npz file")
-    parser.add_argument("--field", default="pressure",
-                        choices=["pressure", "density", "mach", "velocity"])
+    parser.add_argument(
+        "--field", default="pressure", choices=["pressure", "density", "mach", "velocity"]
+    )
     parser.add_argument("--save", action="store_true", help="Save to PNG instead of showing")
     args = parser.parse_args()
 
