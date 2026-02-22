@@ -5,13 +5,21 @@ Supports:
   - Solid wall (inviscid slip wall)
   - Periodic (circumferential wrap for O-grid)
 """
+
 from __future__ import annotations
 
 from src.backend import xp
-from src.gas import GAMMA, pressure, sound_speed, primitive_to_conservative
+from src.gas import GAMMA, primitive_to_conservative, sound_speed
 
 
-def apply_freestream(Q, grid, mach: float, alpha: float = 0.0, p_inf: float = 1.0, rho_inf: float = 1.0):
+def apply_freestream(
+    Q,
+    grid,
+    mach: float,
+    alpha: float = 0.0,
+    p_inf: float = 1.0,
+    rho_inf: float = 1.0,
+):
     """Apply freestream boundary condition at the outer boundary (j = nj-1).
 
     Uses simple characteristic-based extrapolation: subsonic outflow
@@ -47,7 +55,7 @@ def apply_wall(Q, grid):
         Q: conservative variables, shape (4, ni, nj)
         grid: Grid object
     """
-    ni = grid.ni
+    _ = grid.ni  # available for future use
 
     # Mirror the interior cell (j=1) to the ghost cell (j=0)
     # Reflect the velocity normal to the wall

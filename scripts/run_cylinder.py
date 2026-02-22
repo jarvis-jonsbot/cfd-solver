@@ -5,21 +5,21 @@ Usage:
     python scripts/run_cylinder.py --mach 0.3 --cfl 0.5 --steps 10000
     python scripts/run_cylinder.py --mach 2.0 --ni 256 --nj 128 --steps 20000
 """
+
 from __future__ import annotations
 
 import argparse
-import sys
 import os
+import sys
 
 # Add project root to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.backend import xp
-from src.grid import generate_cylinder_grid
-from src.gas import primitive_to_conservative
 from src.boundary import freestream_state
-from src.solver import SolverConfig, solve
+from src.grid import generate_cylinder_grid
 from src.io import save_solution
+from src.solver import SolverConfig, solve
 
 
 def main():
@@ -39,7 +39,7 @@ def main():
 
     alpha_rad = args.alpha * xp.pi / 180.0
 
-    print(f"=== 2D Compressible Cylinder Flow ===")
+    print("=== 2D Compressible Cylinder Flow ===")
     print(f"Mach = {args.mach}, AoA = {args.alpha}°, CFL = {args.cfl}")
     print(f"Grid: {args.ni} x {args.nj}, R_outer = {args.r_outer}")
     print(f"Max steps: {args.steps}")
@@ -48,8 +48,10 @@ def main():
     # Generate grid
     print("Generating grid...")
     grid = generate_cylinder_grid(
-        ni=args.ni, nj=args.nj,
-        r_outer=args.r_outer, stretch=args.stretch,
+        ni=args.ni,
+        nj=args.nj,
+        r_outer=args.r_outer,
+        stretch=args.stretch,
     )
     print(f"Grid: {grid.ni} x {grid.nj} = {grid.ni * grid.nj} cells")
 

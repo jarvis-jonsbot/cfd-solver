@@ -8,17 +8,19 @@ The Sod problem is a standard Riemann problem with known exact solution:
 We solve it on a 1D domain mapped to the 2D solver by using a single
 row in the transverse direction (ni=1, nj=N) with flat metrics.
 """
+
 from __future__ import annotations
 
-import sys
 import os
+import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import numpy as np
+
 from src.backend import xp
-from src.gas import GAMMA, pressure
 from src.flux import roe_flux_1d
+from src.gas import GAMMA
 from src.reconstruction import muscl_reconstruct
 
 
@@ -45,10 +47,12 @@ def sod_exact(x, t, x0=0.5):
     a_star_L = aL * (p_star / pL) ** ((gamma - 1) / (2 * gamma))
 
     # Wave speeds
-    S_HL = uL - aL               # head of rarefaction
-    S_TL = u_star - a_star_L     # tail of rarefaction
-    S_shock = u_star + aR * np.sqrt((gamma + 1) / (2 * gamma) * (p_star / pR - 1) + 1)  # shock speed
-    S_contact = u_star            # contact discontinuity speed
+    S_HL = uL - aL  # head of rarefaction
+    S_TL = u_star - a_star_L  # tail of rarefaction
+    S_shock = (  # shock speed
+        u_star + aR * np.sqrt((gamma + 1) / (2 * gamma) * (p_star / pR - 1) + 1)
+    )
+    S_contact = u_star  # contact discontinuity speed
 
     xi = (x - x0) / max(t, 1e-30)
 
@@ -62,7 +66,10 @@ def sod_exact(x, t, x0=0.5):
             rho[i], u[i], p[i] = rhoL, uL, pL
         elif xi[i] <= S_TL:
             # Region 2 (rarefaction fan)
-            rho[i] = rhoL * (2 / (gamma + 1) + (gamma - 1) / ((gamma + 1) * aL) * (uL - xi[i] * t / max(t, 1e-30))) ** (2 / (gamma - 1))
+            rho[i] = rhoL * (
+                2 / (gamma + 1)
+                + (gamma - 1) / ((gamma + 1) * aL) * (uL - xi[i] * t / max(t, 1e-30))
+            ) ** (2 / (gamma - 1))
             # Simpler: use self-similar solution
             cs = 2 / (gamma + 1) * (aL + (gamma - 1) / 2 * (uL - (x[i] - x0) / t))
             u[i] = 2 / (gamma + 1) * (aL + (gamma - 1) / 2 * uL + (x[i] - x0) / t)
@@ -109,14 +116,12 @@ def run_sod_1d(n_cells: int = 200, t_final: float = 0.2, cfl: float = 0.5):
     Q = Q[:, None, :]  # shape (4, 1, n_cells)
 
     t = 0.0
-    nx = xp.ones((1, n_cells))  # flat grid, normal in x-direction
-    ny = xp.zeros((1, n_cells))
 
     while t < t_final:
         # CFL time step
         rho_c = Q[0, 0, :]
         u_c = Q[1, 0, :] / rho_c
-        p_c = (gamma - 1.0) * (Q[3, 0, :] - 0.5 * Q[1, 0, :]**2 / rho_c)
+        p_c = (gamma - 1.0) * (Q[3, 0, :] - 0.5 * Q[1, 0, :] ** 2 / rho_c)
         a_c = xp.sqrt(gamma * xp.abs(p_c) / rho_c)
         dt = float(cfl * dx / xp.max(xp.abs(u_c) + a_c))
         if t + dt > t_final:
@@ -136,7 +141,7 @@ def run_sod_1d(n_cells: int = 200, t_final: float = 0.2, cfl: float = 0.5):
         # After ghost padding of 2 on each side, interior faces map to [1:-1]
         n_int = min(F.shape[2] - 1, n_cells)
         dQ = xp.zeros_like(Q)
-        dQ[:, :, :n_int] = -(F[:, :, 1:n_int+1] - F[:, :, :n_int]) / dx
+        dQ[:, :, :n_int] = -(F[:, :, 1 : n_int + 1] - F[:, :, :n_int]) / dx
 
         # Simple forward Euler (for the test; could use RK4)
         Q = Q + dt * dQ
@@ -145,7 +150,7 @@ def run_sod_1d(n_cells: int = 200, t_final: float = 0.2, cfl: float = 0.5):
     # Extract results
     rho_out = Q[0, 0, :]
     u_out = Q[1, 0, :] / rho_out
-    p_out = (gamma - 1.0) * (Q[3, 0, :] - 0.5 * Q[1, 0, :]**2 / rho_out)
+    p_out = (gamma - 1.0) * (Q[3, 0, :] - 0.5 * Q[1, 0, :] ** 2 / rho_out)
 
     return x, rho_out, u_out, p_out
 
@@ -157,12 +162,12 @@ def test_sod():
 
     x_num, rho_num, u_num, p_num = run_sod_1d(n_cells=n_cells, t_final=t_final)
 
-    x_np = np.asarray(x_num if not hasattr(x_num, 'get') else x_num.get())
+    x_np = np.asarray(x_num if not hasattr(x_num, "get") else x_num.get())
     rho_exact, u_exact, p_exact = sod_exact(x_np, t_final)
 
-    rho_np = np.asarray(rho_num if not hasattr(rho_num, 'get') else rho_num.get())
-    u_np = np.asarray(u_num if not hasattr(u_num, 'get') else u_num.get())
-    p_np = np.asarray(p_num if not hasattr(p_num, 'get') else p_num.get())
+    rho_np = np.asarray(rho_num if not hasattr(rho_num, "get") else rho_num.get())
+    u_np = np.asarray(u_num if not hasattr(u_num, "get") else u_num.get())
+    p_np = np.asarray(p_num if not hasattr(p_num, "get") else p_num.get())
 
     # L1 error norms (should be small — <5% for 400 cells)
     rho_err = np.mean(np.abs(rho_np - rho_exact)) / np.mean(np.abs(rho_exact))

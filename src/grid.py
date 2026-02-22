@@ -10,6 +10,7 @@ Coordinate system:
 Grid stretching uses geometric progression in the radial direction
 to cluster points near the cylinder surface.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -21,21 +22,21 @@ from src.backend import xp
 class Grid:
     """Structured 2D grid with precomputed metrics."""
 
-    x: object          # physical x-coordinates, shape (ni, nj)
-    y: object          # physical y-coordinates, shape (ni, nj)
-    ni: int            # number of points in ξ (circumferential)
-    nj: int            # number of points in η (radial)
+    x: object  # physical x-coordinates, shape (ni, nj)
+    y: object  # physical y-coordinates, shape (ni, nj)
+    ni: int  # number of points in ξ (circumferential)
+    nj: int  # number of points in η (radial)
     # Metric terms for flux computation in curvilinear coordinates
     # ξ-direction face normals (area-weighted)
-    xi_x: object       # ∂ξ/∂x,  shape (ni, nj) — contravariant metric
-    xi_y: object       # ∂ξ/∂y
+    xi_x: object  # ∂ξ/∂x,  shape (ni, nj) — contravariant metric
+    xi_y: object  # ∂ξ/∂y
     # η-direction contravariant metrics
-    eta_x: object      # ∂η/∂x
-    eta_y: object      # ∂η/∂y
-    jacobian: object   # cell Jacobian (area element), shape (ni, nj)
+    eta_x: object  # ∂η/∂x
+    eta_y: object  # ∂η/∂y
+    jacobian: object  # cell Jacobian (area element), shape (ni, nj)
     # Area-weighted face normals (for flux computation)
-    xi_x_area: object = None   # y_η  (ξ-face x-normal * J)
-    xi_y_area: object = None   # -x_η (ξ-face y-normal * J)
+    xi_x_area: object = None  # y_η  (ξ-face x-normal * J)
+    xi_y_area: object = None  # -x_η (ξ-face y-normal * J)
     eta_x_area: object = None  # -y_ξ (η-face x-normal * J)
     eta_y_area: object = None  # x_ξ  (η-face y-normal * J)
 
@@ -78,9 +79,14 @@ def generate_cylinder_grid(
 
     # Compute metrics using finite differences
     grid = Grid(
-        x=x, y=y, ni=ni, nj=nj,
-        xi_x=None, xi_y=None,  # type: ignore
-        eta_x=None, eta_y=None,  # type: ignore
+        x=x,
+        y=y,
+        ni=ni,
+        nj=nj,
+        xi_x=None,
+        xi_y=None,  # type: ignore
+        eta_x=None,
+        eta_y=None,  # type: ignore
         jacobian=None,  # type: ignore
     )
     _compute_metrics(grid)
@@ -98,7 +104,6 @@ def _compute_metrics(grid: Grid) -> None:
         ξ_x =  y_η / J,   ξ_y = -x_η / J
         η_x = -y_ξ / J,   η_y =  x_ξ / J
     """
-    ni, nj = grid.ni, grid.nj
     x, y = grid.x, grid.y
 
     # ξ derivatives (periodic in i-direction)

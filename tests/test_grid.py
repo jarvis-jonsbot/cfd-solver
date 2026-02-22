@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
 """Grid quality tests."""
+
 from __future__ import annotations
 
-import sys
 import os
+import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import numpy as np
-from src.backend import xp, to_numpy
+
+from src.backend import to_numpy, xp
 from src.grid import generate_cylinder_grid
 
 
@@ -22,7 +24,7 @@ def test_grid_basic():
     assert grid.y.shape == (64, 32)
 
     # Inner boundary should be on the cylinder (r = 0.5)
-    r_inner = to_numpy(xp.sqrt(grid.x[:, 0]**2 + grid.y[:, 0]**2))
+    r_inner = to_numpy(xp.sqrt(grid.x[:, 0] ** 2 + grid.y[:, 0] ** 2))
     np.testing.assert_allclose(r_inner, 0.5, atol=1e-10)
 
     # Jacobian should be positive everywhere

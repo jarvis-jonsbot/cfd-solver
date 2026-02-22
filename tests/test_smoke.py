@@ -1,15 +1,17 @@
 """Smoke test: run the solver briefly and verify no NaN/Inf in output."""
+
 from __future__ import annotations
 
-import sys
 import os
+import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import numpy as np
+
 from src.backend import xp
-from src.grid import generate_cylinder_grid
 from src.boundary import freestream_state
+from src.grid import generate_cylinder_grid
 from src.solver import SolverConfig, solve
 
 

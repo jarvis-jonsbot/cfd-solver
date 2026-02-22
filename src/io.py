@@ -1,11 +1,12 @@
 """Solution I/O and checkpointing."""
+
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
-from src.backend import xp, to_numpy
 import numpy as np
+
+from src.backend import to_numpy, xp
 
 
 def save_solution(Q, grid, filepath: str, t: float = 0.0, step: int = 0) -> None:

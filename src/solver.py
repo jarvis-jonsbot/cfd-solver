@@ -3,24 +3,26 @@
 Implements the semi-discrete finite volume method on a structured
 curvilinear grid with explicit Runge-Kutta time stepping.
 """
+
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import Optional, Callable
+from dataclasses import dataclass
+from typing import Callable
 
 from src.backend import xp
-from src.grid import Grid
-from src.gas import GAMMA, pressure, sound_speed
-from src.flux import roe_flux_1d
-from src.reconstruction import muscl_reconstruct
 from src.boundary import apply_freestream, apply_wall
+from src.flux import roe_flux_1d
+from src.gas import pressure, sound_speed
+from src.grid import Grid
+from src.reconstruction import muscl_reconstruct
 
 
 @dataclass
 class SolverConfig:
     """Configuration for the flow solver."""
+
     mach: float = 0.3
-    alpha: float = 0.0          # angle of attack (radians)
+    alpha: float = 0.0  # angle of attack (radians)
     cfl: float = 0.5
     max_steps: int = 10000
     p_inf: float = 1.0
@@ -47,7 +49,7 @@ def compute_dt(Q, grid: Grid, cfl: float) -> float:
     # Spectral radii in ξ and η directions using area-weighted normals
     # Contravariant velocities (use area normals / |J| for proper scaling)
     J_abs = xp.abs(grid.jacobian) + 1e-30
-    U_xi = u * grid.xi_x_area + v * grid.xi_y_area    # contravariant vel * |J|
+    U_xi = u * grid.xi_x_area + v * grid.xi_y_area  # contravariant vel * |J|
     U_eta = u * grid.eta_x_area + v * grid.eta_y_area
 
     # Face normal magnitudes (area-weighted)
@@ -77,7 +79,7 @@ def compute_residual(Q, grid: Grid) -> object:
     Returns:
         R: residual, shape (4, ni, nj)
     """
-    ni, nj = grid.ni, grid.nj
+    ni = grid.ni
     R = xp.zeros_like(Q)
 
     # --- ξ-direction fluxes (periodic) ---
@@ -93,14 +95,14 @@ def compute_residual(Q, grid: Grid) -> object:
     # Interface i+1/2 normal = average of cell i and i+1 normals
     # After MUSCL trimming: interface k corresponds to padded cells k+1 and k+2
     n_ifaces = QL_xi.shape[1]
-    nx_xi = 0.5 * (sx_pad[1:1+n_ifaces, :] + sx_pad[2:2+n_ifaces, :])
-    ny_xi = 0.5 * (sy_pad[1:1+n_ifaces, :] + sy_pad[2:2+n_ifaces, :])
+    nx_xi = 0.5 * (sx_pad[1 : 1 + n_ifaces, :] + sx_pad[2 : 2 + n_ifaces, :])
+    ny_xi = 0.5 * (sy_pad[1 : 1 + n_ifaces, :] + sy_pad[2 : 2 + n_ifaces, :])
 
     F_xi = roe_flux_1d(QL_xi, QR_xi, nx_xi, ny_xi)
 
     # Accumulate: R -= F_{i+1/2} - F_{i-1/2} for each cell
     # F_xi has ni+1 interfaces. Cell i uses faces i and i+1.
-    R -= F_xi[:, 1:ni+1, :] - F_xi[:, :ni, :]
+    R -= F_xi[:, 1 : ni + 1, :] - F_xi[:, :ni, :]
 
     # --- η-direction fluxes (non-periodic) ---
     QL_eta, QR_eta = muscl_reconstruct(Q, axis=1)  # along dim 2
@@ -109,8 +111,8 @@ def compute_residual(Q, grid: Grid) -> object:
     # Interface k is between cells j=k+1 and j=k+2 (0-indexed)
     n_efaces = QL_eta.shape[2]
     # Average area-weighted normals at η interfaces
-    nx_eta = 0.5 * (grid.eta_x_area[:, 1:1+n_efaces] + grid.eta_x_area[:, 2:2+n_efaces])
-    ny_eta = 0.5 * (grid.eta_y_area[:, 1:1+n_efaces] + grid.eta_y_area[:, 2:2+n_efaces])
+    nx_eta = 0.5 * (grid.eta_x_area[:, 1 : 1 + n_efaces] + grid.eta_x_area[:, 2 : 2 + n_efaces])
+    ny_eta = 0.5 * (grid.eta_y_area[:, 1 : 1 + n_efaces] + grid.eta_y_area[:, 2 : 2 + n_efaces])
 
     G_eta = roe_flux_1d(QL_eta, QR_eta, nx_eta, ny_eta)
 
@@ -119,7 +121,7 @@ def compute_residual(Q, grid: Grid) -> object:
     # So cell j=k+2 has left face at k and right face at k+1
     # Cells updated: j=2 through j=2+(n_efaces-2) = j=n_efaces
     if n_efaces >= 2:
-        R[:, :, 2:2+n_efaces-1] -= G_eta[:, :, 1:] - G_eta[:, :, :-1]
+        R[:, :, 2 : 2 + n_efaces - 1] -= G_eta[:, :, 1:] - G_eta[:, :, :-1]
 
     # Also handle first-order flux at wall-adjacent cells (j=1) using
     # direct first-order Roe flux between j=0 (ghost) and j=1
@@ -137,8 +139,7 @@ def compute_residual(Q, grid: Grid) -> object:
     return R
 
 
-def solve(Q0, grid: Grid, config: SolverConfig,
-          callback: Optional[Callable] = None) -> object:
+def solve(Q0, grid: Grid, config: SolverConfig, callback: Callable | None = None) -> object:
     """Run the solver with RK4 time integration.
 
     Args:
@@ -188,9 +189,11 @@ def solve(Q0, grid: Grid, config: SolverConfig,
             rho_max = float(xp.max(Q[0, :, 1:-1]))
             p_min = float(xp.min(p[:, 1:-1]))
             p_max = float(xp.max(p[:, 1:-1]))
-            print(f"Step {step:6d}  t={t:.6f}  dt={dt:.2e}  "
-                  f"rho=[{rho_min:.4f}, {rho_max:.4f}]  "
-                  f"p=[{p_min:.4f}, {p_max:.4f}]")
+            print(
+                f"Step {step:6d}  t={t:.6f}  dt={dt:.2e}  "
+                f"rho=[{rho_min:.4f}, {rho_max:.4f}]  "
+                f"p=[{p_min:.4f}, {p_max:.4f}]"
+            )
 
         if callback and step % config.output_interval == 0:
             callback(step, t, Q)
