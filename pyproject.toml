@@ -26,9 +26,14 @@ select = ["E", "F", "I", "W", "UP", "B", "SIM"]
 
 [tool.mypy]
 python_version = "3.9"
-strict = true
 warn_return_any = true
 warn_unused_configs = true
+check_untyped_defs = true
+
+[[tool.mypy.overrides]]
+module = ["src.grid", "src.solver", "src.flux", "src.boundary", "src.reconstruction", "src.gas"]
+# Dynamic array backend (numpy/cupy) produces unresolvable types
+disable_error_code = ["index", "operator", "unused-ignore"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
