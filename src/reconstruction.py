@@ -62,8 +62,11 @@ def muscl_reconstruct(Q, axis: int, limiter=van_leer_limiter):
 
     # Slope ratios (regularized to avoid division by zero)
     eps = 1e-12
-    r_L = xp.where(xp.abs(dQf) > eps, dQb / (dQf + xp.sign(dQf) * eps), 0.0)
-    r_R = xp.where(xp.abs(dQb2) > eps, dQf2 / (dQb2 + xp.sign(dQb2) * eps), 0.0)
+    # Use safe division: replace small denominators to avoid warnings
+    dQf_safe = xp.where(xp.abs(dQf) > eps, dQf, 1.0)
+    dQb2_safe = xp.where(xp.abs(dQb2) > eps, dQb2, 1.0)
+    r_L = xp.where(xp.abs(dQf) > eps, dQb / dQf_safe, 0.0)
+    r_R = xp.where(xp.abs(dQb2) > eps, dQf2 / dQb2_safe, 0.0)
 
     phi_L = limiter(r_L)
     phi_R = limiter(r_R)

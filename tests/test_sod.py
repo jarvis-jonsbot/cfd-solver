@@ -179,7 +179,6 @@ def test_sod():
     assert p_err < 0.10, f"Pressure error too large: {p_err}"
 
     print("  ✅ Sod shock tube test PASSED")
-    return True
 
 
 if __name__ == "__main__":
