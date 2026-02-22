@@ -135,11 +135,14 @@ def _compute_metrics(grid: Grid) -> None:
     # Jacobian
     grid.jacobian = J
 
-    # Area-weighted face normals (NOT divided by J) — use for flux computation
-    grid.xi_x_area = y_eta
-    grid.xi_y_area = -x_eta
-    grid.eta_x_area = -y_xi
-    grid.eta_y_area = x_xi
+    # Area-weighted face normals (NOT divided by J) — use for flux computation.
+    # Multiply by sign(J) so normals point in the ξ/η-increasing direction
+    # regardless of whether the coordinate system is right- or left-handed.
+    sign_J = xp.sign(J)
+    grid.xi_x_area = y_eta * sign_J
+    grid.xi_y_area = -x_eta * sign_J
+    grid.eta_x_area = -y_xi * sign_J
+    grid.eta_y_area = x_xi * sign_J
 
     # Contravariant metrics (divided by J) — kept for other uses
     grid.xi_x = y_eta / J

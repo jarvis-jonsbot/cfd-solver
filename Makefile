@@ -26,7 +26,10 @@ md-lint:
 check: lint typecheck md-lint test
 
 run:
-	$(PYTHON) scripts/run_cylinder.py --mach 0.3 --cfl 0.5 --steps 5000
+	$(PYTHON) scripts/run_cylinder.py --mach 0.3 --cfl 0.5 --steps 5000 --save-every 100
+
+animate:
+	$(PYTHON) scripts/animate.py --input output/ --field pressure --output flow.gif --fps 10
 
 clean:
 	rm -rf $(VENV) .pytest_cache .mypy_cache .ruff_cache __pycache__ src/__pycache__ tests/__pycache__ output/
