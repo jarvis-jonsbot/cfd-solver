@@ -6,7 +6,7 @@ values using piecewise-linear reconstruction with TVD limiters.
 
 from __future__ import annotations
 
-from src.backend import xp
+from src.backend import EPS_SLOPE, xp
 
 
 def van_leer_limiter(r):
@@ -42,7 +42,7 @@ def muscl_reconstruct(Q, axis: int, limiter=van_leer_limiter):
         sl_r = [slice(None)] * Q.ndim
         sl_l[dim] = slice(0, n - 1)
         sl_r[dim] = slice(1, n)
-        return Q[tuple(sl_l)].copy(), Q[tuple(sl_r)].copy()
+        return xp.array(Q[tuple(sl_l)]), xp.array(Q[tuple(sl_r)])
 
     # Build slices for Q[..., i-1, ...], Q[..., i, ...], Q[..., i+1, ...], Q[..., i+2, ...]
     def _sl(start, stop):
@@ -62,7 +62,7 @@ def muscl_reconstruct(Q, axis: int, limiter=van_leer_limiter):
     dQb2 = Qip1 - Qi  # backward diff at i+1
 
     # Slope ratios (regularized to avoid division by zero)
-    eps = 1e-12
+    eps = EPS_SLOPE
     # Use safe division: replace small denominators to avoid warnings
     dQf_safe = xp.where(xp.abs(dQf) > eps, dQf, 1.0)
     dQb2_safe = xp.where(xp.abs(dQb2) > eps, dQb2, 1.0)

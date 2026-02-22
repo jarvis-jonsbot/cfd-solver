@@ -6,7 +6,7 @@ with Harten's entropy fix.
 
 from __future__ import annotations
 
-from src.backend import xp
+from src.backend import EPS_TINY, xp
 from src.gas import GAMMA, enthalpy, pressure, sound_speed
 
 
@@ -45,15 +45,15 @@ def roe_flux_1d(QL, QR, nx, ny):
     FR = _euler_flux(QR, uR, vR, pR, vnR, nx, ny)
 
     # Roe averages
-    sqrtL = xp.sqrt(xp.maximum(rhoL, 1e-30))
-    sqrtR = xp.sqrt(xp.maximum(rhoR, 1e-30))
+    sqrtL = xp.sqrt(xp.maximum(rhoL, EPS_TINY))
+    sqrtR = xp.sqrt(xp.maximum(rhoR, EPS_TINY))
     denom = sqrtL + sqrtR
 
     u_roe = (sqrtL * uL + sqrtR * uR) / denom
     v_roe = (sqrtL * vL + sqrtR * vR) / denom
     H_roe = (sqrtL * HL + sqrtR * HR) / denom
     q2 = u_roe**2 + v_roe**2
-    a_roe = xp.sqrt(xp.maximum((GAMMA - 1.0) * (H_roe - 0.5 * q2), 1e-30))
+    a_roe = xp.sqrt(xp.maximum((GAMMA - 1.0) * (H_roe - 0.5 * q2), EPS_TINY))
     vn_roe = u_roe * nx + v_roe * ny
     rho_roe = sqrtL * sqrtR
 

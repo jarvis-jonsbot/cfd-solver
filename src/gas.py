@@ -6,7 +6,7 @@ Primitive:  W = [rho, u, v, p]
 
 from __future__ import annotations
 
-from src.backend import xp
+from src.backend import EPS_TINY, xp
 
 GAMMA: float = 1.4  # ratio of specific heats for air
 
@@ -53,7 +53,7 @@ def pressure(Q):
 
 def sound_speed(rho, p):
     """Compute speed of sound."""
-    return xp.sqrt(GAMMA * xp.abs(p) / xp.maximum(rho, 1e-30))
+    return xp.sqrt(GAMMA * xp.abs(p) / xp.maximum(rho, EPS_TINY))
 
 
 def enthalpy(Q):

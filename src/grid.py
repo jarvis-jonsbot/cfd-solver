@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from src.backend import xp
+from src.backend import EPS_TINY, xp
 
 
 @dataclass
@@ -130,7 +130,7 @@ def _compute_metrics(grid: Grid) -> None:
 
     # Jacobian
     J = x_xi * y_eta - x_eta * y_xi
-    J = xp.where(xp.abs(J) < 1e-30, 1e-30, J)  # prevent division by zero
+    J = xp.where(xp.abs(J) < EPS_TINY, EPS_TINY, J)  # prevent division by zero
 
     # Jacobian
     grid.jacobian = J

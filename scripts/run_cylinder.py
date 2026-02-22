@@ -39,6 +39,13 @@ def main():
 
     alpha_rad = args.alpha * xp.pi / 180.0
 
+    # Auto-reduce CFL for float32 backends (MLX) — float32 needs more conservative stepping
+    from src.backend import _BACKEND_NAME
+
+    if _BACKEND_NAME == "mlx" and args.cfl > 0.08:
+        print(f"[MLX] Reducing CFL from {args.cfl} to 0.08 (float32 stability limit)")
+        args.cfl = 0.08
+
     print("=== 2D Compressible Cylinder Flow ===")
     print(f"Mach = {args.mach}, AoA = {args.alpha}°, CFL = {args.cfl}")
     print(f"Grid: {args.ni} x {args.nj}, R_outer = {args.r_outer}")

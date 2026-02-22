@@ -3,7 +3,8 @@
 ## Architecture
 
 - **Python** for orchestration, grid generation, boundary conditions, I/O, visualization
-- **CuPy** for GPU-accelerated computation (flux calculation, reconstruction, time stepping)
+- **MLX** for Apple Silicon GPU acceleration (float32 only — CFL auto-capped at 0.08)
+- **CuPy** for NVIDIA GPU-accelerated computation (flux calculation, reconstruction, time stepping)
 - **Fallback**: NumPy backend when no GPU available (same interface via array module abstraction)
 
 ## Numerical Methods
@@ -47,7 +48,7 @@ cfd-solver/
 
 ## Key Design Decisions
 
-1. **Backend abstraction**: `backend.py` provides `xp` module that's either CuPy or NumPy. All compute code uses `xp.array()`, `xp.zeros()`, etc. Switch with env var `CFD_BACKEND=cupy|numpy`.
+1. **Backend abstraction**: `backend.py` provides `xp` module that's MLX, CuPy, or NumPy. All compute code uses `xp.array()`, `xp.zeros()`, etc. Switch with env var `CFD_BACKEND=mlx|cupy|numpy`. MLX uses a shim class to patch API gaps (e.g. `linspace(endpoint=False)`).
 2. **Conservative variables**: Store as 4D array `Q[4, ni, nj]` — density, rho*u, rho*v, rho*E
 3. **Area-weighted face normals**: Grid stores both contravariant metrics (`xi_x`, etc. — divided by J) and area-weighted normals (`xi_x_area = y_eta`, `xi_y_area = -x_eta`, etc. — NOT divided by J). The flux computation uses the area-weighted normals so the Roe solver returns physical flux through each face, which is then divided by cell volume (|J|) to get the residual.
 4. **CFL-based time stepping**: Compute stable dt from CFL condition each step using area-weighted spectral radii.
@@ -55,6 +56,8 @@ cfd-solver/
 ## Critical Numerical Notes
 
 - **Metric scaling**: The face normals passed to the Roe flux MUST be area-weighted (not divided by J). Using contravariant metrics (divided by J) and then dividing by J again produces 1/J² scaling → immediate overflow/NaN.
+- **Jacobian sign**: Area-weighted normals are multiplied by `sign(J)` to ensure correct orientation regardless of coordinate handedness. The O-grid has J < 0; without this correction, normals point inward and the Roe dissipation becomes anti-dissipation.
+- **Float32 precision**: MLX only supports float32. The solver uses `EPS_TINY` and `EPS_SLOPE` constants from `backend.py` that auto-adjust based on backend (1e-30/1e-12 for float64, 1e-7/1e-5 for float32). CFL must be ≤ 0.08 for float32 stability.
 - **MUSCL stencil trimming**: MUSCL reconstruction on N points produces N-3 interfaces. The face-to-cell index mapping must account for this offset.
 - **Wall boundary**: Ghost cell at j=0, first interior cell at j=1. The wall-adjacent cell gets a first-order flux from the wall BC.
 
@@ -76,6 +79,10 @@ source .venv/bin/activate
 pip install -e ".[dev]"
 python scripts/run_cylinder.py --mach 0.3 --cfl 0.5 --steps 10000
 python scripts/visualize.py --input output/solution.npz
+
+# Apple Silicon GPU acceleration:
+CFD_BACKEND=mlx python scripts/run_cylinder.py --mach 0.3 --steps 5000
+# or: pip install -e ".[gpu-apple]"
 ```
 
 ## Validation Targets

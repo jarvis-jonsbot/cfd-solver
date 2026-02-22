@@ -8,7 +8,7 @@ Supports:
 
 from __future__ import annotations
 
-from src.backend import xp
+from src.backend import EPS_TINY, xp
 from src.gas import GAMMA, primitive_to_conservative, sound_speed
 
 
@@ -66,7 +66,7 @@ def apply_wall(Q, grid):
     # Wall normal at j=0 boundary (η direction)
     nx = grid.eta_x[:, 0]
     ny = grid.eta_y[:, 0]
-    nmag = xp.sqrt(nx**2 + ny**2) + 1e-30
+    nmag = xp.sqrt(nx**2 + ny**2) + EPS_TINY
     nx = nx / nmag
     ny = ny / nmag
 

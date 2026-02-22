@@ -9,7 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Callable
 
-from src.backend import xp
+from src.backend import EPS_TINY, xp
 from src.boundary import apply_freestream, apply_wall
 from src.flux import roe_flux_1d
 from src.gas import pressure, sound_speed
@@ -48,7 +48,7 @@ def compute_dt(Q, grid: Grid, cfl: float) -> float:
 
     # Spectral radii in ξ and η directions using area-weighted normals
     # Contravariant velocities (use area normals / |J| for proper scaling)
-    J_abs = xp.abs(grid.jacobian) + 1e-30
+    J_abs = xp.abs(grid.jacobian) + EPS_TINY
     U_xi = u * grid.xi_x_area + v * grid.xi_y_area  # contravariant vel * |J|
     U_eta = u * grid.eta_x_area + v * grid.eta_y_area
 
@@ -60,7 +60,7 @@ def compute_dt(Q, grid: Grid, cfl: float) -> float:
     sr_eta = xp.abs(U_eta) + a * eta_mag
 
     # dt = CFL * |J| / (sr_xi + sr_eta)
-    dt_local = cfl * J_abs / (sr_xi + sr_eta + 1e-30)
+    dt_local = cfl * J_abs / (sr_xi + sr_eta + EPS_TINY)
     return float(xp.min(dt_local))
 
 
@@ -134,7 +134,7 @@ def compute_residual(Q, grid: Grid) -> object:
         R[:, :, 1:2] -= G_eta[:, :, 0:1] - F_wall[:, :, 0:1]
 
     # Divide by cell volume (|J|)
-    R /= xp.abs(grid.jacobian[None, :, :]) + 1e-30
+    R /= xp.abs(grid.jacobian[None, :, :]) + EPS_TINY
 
     return R
 
@@ -151,7 +151,7 @@ def solve(Q0, grid: Grid, config: SolverConfig, callback: Callable | None = None
     Returns:
         Q: final conservative state
     """
-    Q = Q0.copy()
+    Q = xp.array(Q0)
     t = 0.0
 
     for step in range(1, config.max_steps + 1):
