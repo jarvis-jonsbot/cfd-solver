@@ -78,4 +78,34 @@ python scripts/visualize.py --input output/solution.npz
 - **Cylinder flow** (2D): drag coefficient, pressure distribution vs published data
 
 ## CI
-GitHub Actions runs on push/PR to main. Tests Python 3.9, 3.11, 3.12 in isolated venvs.
+GitHub Actions runs on push/PR to main. Lint (Ruff + mypy) on 3.12, tests on 3.9/3.11/3.12, markdown lint.
+
+## Code Quality
+```bash
+make lint          # ruff check + format check
+make lint-fix      # auto-fix lint issues + format
+make typecheck     # mypy strict mode
+```
+
+## Commit Conventions
+Use [Conventional Commits](https://www.conventionalcommits.org/):
+- `feat:` new feature (flux scheme, BC, limiter)
+- `fix:` bug fix
+- `perf:` performance improvement
+- `refactor:` code restructure without behavior change
+- `test:` add/update tests
+- `docs:` documentation only
+- `chore:` build, CI, tooling changes
+
+Scope is optional: `feat(flux): add HLLC scheme`
+
+## Don't
+- Don't use bare `numpy` imports — always go through `backend.xp`
+- Don't divide by Jacobian in flux computation (use area-weighted normals directly)
+- Don't hardcode gamma=1.4 — use `gas.gamma`
+- Don't skip MUSCL stencil offset accounting (N points → N-3 interfaces)
+- Don't commit output files (`.npz`, images) — they're gitignored
+- Don't merge to main without CI green
+
+## Skills
+See `.claude/skills/` for workflow guides (adding flux schemes, BCs, limiters).
