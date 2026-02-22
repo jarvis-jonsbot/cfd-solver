@@ -44,27 +44,31 @@ def compute_dt(Q, grid: Grid, cfl: float) -> float:
     p = pressure(Q)
     a = sound_speed(rho, p)
 
-    # Spectral radii in ξ and η directions
-    # Contravariant velocities
-    U_xi = u * grid.xi_x + v * grid.xi_y    # contravariant velocity in ξ
-    U_eta = u * grid.eta_x + v * grid.eta_y  # contravariant velocity in η
+    # Spectral radii in ξ and η directions using area-weighted normals
+    # Contravariant velocities (use area normals / |J| for proper scaling)
+    J_abs = xp.abs(grid.jacobian) + 1e-30
+    U_xi = u * grid.xi_x_area + v * grid.xi_y_area    # contravariant vel * |J|
+    U_eta = u * grid.eta_x_area + v * grid.eta_y_area
 
-    # Face normal magnitudes
-    xi_mag = xp.sqrt(grid.xi_x**2 + grid.xi_y**2)
-    eta_mag = xp.sqrt(grid.eta_x**2 + grid.eta_y**2)
+    # Face normal magnitudes (area-weighted)
+    xi_mag = xp.sqrt(grid.xi_x_area**2 + grid.xi_y_area**2)
+    eta_mag = xp.sqrt(grid.eta_x_area**2 + grid.eta_y_area**2)
 
     sr_xi = xp.abs(U_xi) + a * xi_mag
     sr_eta = xp.abs(U_eta) + a * eta_mag
 
-    # dt from each direction
-    dt_local = cfl / (sr_xi + sr_eta + 1e-30)
+    # dt = CFL * |J| / (sr_xi + sr_eta)
+    dt_local = cfl * J_abs / (sr_xi + sr_eta + 1e-30)
     return float(xp.min(dt_local))
 
 
 def compute_residual(Q, grid: Grid) -> object:
-    """Compute the spatial residual R(Q) = -dF/dξ - dG/dη.
+    """Compute the spatial residual R(Q) = -(1/J)(dF_hat/dξ + dG_hat/dη).
 
     Uses MUSCL reconstruction + Roe flux in each coordinate direction.
+    Face normals are area-weighted (not divided by J) so the Roe flux
+    returns the physical flux through each face. We then divide by J
+    (cell volume) at the end.
 
     Args:
         Q: conservative variables, shape (4, ni, nj)
@@ -76,73 +80,58 @@ def compute_residual(Q, grid: Grid) -> object:
     ni, nj = grid.ni, grid.nj
     R = xp.zeros_like(Q)
 
-    # --- ξ-direction fluxes ---
-    # Reconstruct in ξ (periodic direction)
-    # Pad Q periodically for reconstruction stencil
+    # --- ξ-direction fluxes (periodic) ---
+    # Pad Q periodically: 2 ghost cells on each side
     Q_padded = xp.concatenate([Q[:, -2:, :], Q, Q[:, :2, :]], axis=1)
-    QL_xi, QR_xi = muscl_reconstruct(Q_padded, axis=0)  # along ni+4 dim
+    QL_xi, QR_xi = muscl_reconstruct(Q_padded, axis=0)  # along dim 1
 
-    # Face normals at ξ interfaces (averaged from neighboring cells)
-    # Interface i+1/2 is between cells i and i+1
-    # After padding of 2, interior starts at index 2
-    # QL_xi, QR_xi have shape (4, ni+4-3, nj) = (4, ni+1, nj)
-    # We need ni interfaces for the periodic domain
+    # MUSCL on (ni+4) points produces (ni+4-3) = ni+1 interfaces — perfect for ni cells
+    # Pad area-weighted normals the same way and average at interfaces
+    sx_pad = xp.concatenate([grid.xi_x_area[-2:, :], grid.xi_x_area, grid.xi_x_area[:2, :]], axis=0)
+    sy_pad = xp.concatenate([grid.xi_y_area[-2:, :], grid.xi_y_area, grid.xi_y_area[:2, :]], axis=0)
 
-    xi_x_pad = xp.concatenate([grid.xi_x[-2:, :], grid.xi_x, grid.xi_x[:2, :]], axis=0)
-    xi_y_pad = xp.concatenate([grid.xi_y[-2:, :], grid.xi_y, grid.xi_y[:2, :]], axis=0)
-
-    # Average normals at interfaces
-    nx_xi = 0.5 * (xi_x_pad[1:-1, :] + xi_x_pad[2:, :])  # shape (ni+2, nj)
-    ny_xi = 0.5 * (xi_y_pad[1:-1, :] + xi_y_pad[2:, :])
-
-    # Trim to match QL_xi size
-    n_interfaces = QL_xi.shape[1]
-    nx_xi = nx_xi[:n_interfaces, :]
-    ny_xi = ny_xi[:n_interfaces, :]
+    # Interface i+1/2 normal = average of cell i and i+1 normals
+    # After MUSCL trimming: interface k corresponds to padded cells k+1 and k+2
+    n_ifaces = QL_xi.shape[1]
+    nx_xi = 0.5 * (sx_pad[1:1+n_ifaces, :] + sx_pad[2:2+n_ifaces, :])
+    ny_xi = 0.5 * (sy_pad[1:1+n_ifaces, :] + sy_pad[2:2+n_ifaces, :])
 
     F_xi = roe_flux_1d(QL_xi, QR_xi, nx_xi, ny_xi)
 
-    # Accumulate: R -= (F_{i+1/2} - F_{i-1/2}) for each cell
-    # F_xi has n_interfaces = ni+1 faces. After trimming for the periodic domain:
-    # We need exactly ni+1 interfaces to get ni cells
-    # Map back from padded to original indices
-    for eq in range(4):
-        if F_xi.shape[1] >= ni + 1:
-            R[eq, :, :] -= (F_xi[eq, 1:ni+1, :] - F_xi[eq, :ni, :])
-        else:
-            # Fallback: first-order in ξ
-            for i in range(ni):
-                ip1 = (i + 1) % ni
-                im1 = (i - 1) % ni
-                nx = 0.5 * (grid.xi_x[i, :] + grid.xi_x[ip1, :])
-                ny = 0.5 * (grid.xi_y[i, :] + grid.xi_y[ip1, :])
-                F_p = roe_flux_1d(Q[:, i:i+1, :], Q[:, ip1:ip1+1, :], nx[None, :], ny[None, :])
-                nx_m = 0.5 * (grid.xi_x[im1, :] + grid.xi_x[i, :])
-                ny_m = 0.5 * (grid.xi_y[im1, :] + grid.xi_y[i, :])
-                F_m = roe_flux_1d(Q[:, im1:im1+1, :], Q[:, i:i+1, :], nx_m[None, :], ny_m[None, :])
-                R[eq, i, :] -= (F_p[eq, 0, :] - F_m[eq, 0, :])
+    # Accumulate: R -= F_{i+1/2} - F_{i-1/2} for each cell
+    # F_xi has ni+1 interfaces. Cell i uses faces i and i+1.
+    R -= F_xi[:, 1:ni+1, :] - F_xi[:, :ni, :]
 
-    # --- η-direction fluxes ---
-    QL_eta, QR_eta = muscl_reconstruct(Q, axis=1)  # along nj dim
+    # --- η-direction fluxes (non-periodic) ---
+    QL_eta, QR_eta = muscl_reconstruct(Q, axis=1)  # along dim 2
 
-    # Face normals for η interfaces
-    n_eta_faces = QL_eta.shape[2]
-    eta_x_avg = 0.5 * (grid.eta_x[:, 1:n_eta_faces+1] + grid.eta_x[:, 2:n_eta_faces+2]) \
-        if grid.eta_x.shape[1] > n_eta_faces + 1 else grid.eta_x[:, :n_eta_faces]
-    eta_y_avg = 0.5 * (grid.eta_y[:, 1:n_eta_faces+1] + grid.eta_y[:, 2:n_eta_faces+2]) \
-        if grid.eta_y.shape[1] > n_eta_faces + 1 else grid.eta_y[:, :n_eta_faces]
+    # MUSCL on nj points produces nj-3 interfaces
+    # Interface k is between cells j=k+1 and j=k+2 (0-indexed)
+    n_efaces = QL_eta.shape[2]
+    # Average area-weighted normals at η interfaces
+    nx_eta = 0.5 * (grid.eta_x_area[:, 1:1+n_efaces] + grid.eta_x_area[:, 2:2+n_efaces])
+    ny_eta = 0.5 * (grid.eta_y_area[:, 1:1+n_efaces] + grid.eta_y_area[:, 2:2+n_efaces])
 
-    G_eta = roe_flux_1d(QL_eta, QR_eta, eta_x_avg, eta_y_avg)
+    G_eta = roe_flux_1d(QL_eta, QR_eta, nx_eta, ny_eta)
 
-    # Accumulate η fluxes for interior cells
-    nf = G_eta.shape[2]
-    # G_eta faces correspond to interfaces j+1/2 for j in [1..nj-3] (from MUSCL trimming)
-    # Map: G_eta[:,:,k] is face between cell j=k+1 and j=k+2
-    for eq in range(4):
-        if nf >= 2:
-            R[eq, :, 2:2+nf-1] -= (G_eta[eq, :, 1:] - G_eta[eq, :, :-1])
+    # Accumulate: cell j gets G_{j+1/2} - G_{j-1/2}
+    # G_eta[:,:,k] is interface between j=k+1 and j=k+2
+    # So cell j=k+2 has left face at k and right face at k+1
+    # Cells updated: j=2 through j=2+(n_efaces-2) = j=n_efaces
+    if n_efaces >= 2:
+        R[:, :, 2:2+n_efaces-1] -= G_eta[:, :, 1:] - G_eta[:, :, :-1]
 
-    # Divide by cell volume (Jacobian)
+    # Also handle first-order flux at wall-adjacent cells (j=1) using
+    # direct first-order Roe flux between j=0 (ghost) and j=1
+    # This ensures the wall BC propagates into the domain
+    nx_w = grid.eta_x_area[:, 0]
+    ny_w = grid.eta_y_area[:, 0]
+    F_wall = roe_flux_1d(Q[:, :, 0:1], Q[:, :, 1:2], nx_w[:, None], ny_w[:, None])
+    # Cell j=1: left face is wall face, right face is G_eta[:,:,0] (if it exists)
+    if n_efaces >= 1:
+        R[:, :, 1:2] -= G_eta[:, :, 0:1] - F_wall[:, :, 0:1]
+
+    # Divide by cell volume (|J|)
     R /= xp.abs(grid.jacobian[None, :, :]) + 1e-30
 
     return R

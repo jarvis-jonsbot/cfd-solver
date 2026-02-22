@@ -27,12 +27,17 @@ class Grid:
     nj: int            # number of points in η (radial)
     # Metric terms for flux computation in curvilinear coordinates
     # ξ-direction face normals (area-weighted)
-    xi_x: object       # ∂ξ/∂x * J,  shape (ni, nj)
-    xi_y: object       # ∂ξ/∂y * J
-    # η-direction face normals (area-weighted)
-    eta_x: object      # ∂η/∂x * J
-    eta_y: object      # ∂η/∂y * J
+    xi_x: object       # ∂ξ/∂x,  shape (ni, nj) — contravariant metric
+    xi_y: object       # ∂ξ/∂y
+    # η-direction contravariant metrics
+    eta_x: object      # ∂η/∂x
+    eta_y: object      # ∂η/∂y
     jacobian: object   # cell Jacobian (area element), shape (ni, nj)
+    # Area-weighted face normals (for flux computation)
+    xi_x_area: object = None   # y_η  (ξ-face x-normal * J)
+    xi_y_area: object = None   # -x_η (ξ-face y-normal * J)
+    eta_x_area: object = None  # -y_ξ (η-face x-normal * J)
+    eta_y_area: object = None  # x_ξ  (η-face y-normal * J)
 
 
 def generate_cylinder_grid(
@@ -122,9 +127,17 @@ def _compute_metrics(grid: Grid) -> None:
     J = x_xi * y_eta - x_eta * y_xi
     J = xp.where(xp.abs(J) < 1e-30, 1e-30, J)  # prevent division by zero
 
-    # Contravariant metrics (area-weighted normals)
+    # Jacobian
+    grid.jacobian = J
+
+    # Area-weighted face normals (NOT divided by J) — use for flux computation
+    grid.xi_x_area = y_eta
+    grid.xi_y_area = -x_eta
+    grid.eta_x_area = -y_xi
+    grid.eta_y_area = x_xi
+
+    # Contravariant metrics (divided by J) — kept for other uses
     grid.xi_x = y_eta / J
     grid.xi_y = -x_eta / J
     grid.eta_x = -y_xi / J
     grid.eta_y = x_xi / J
-    grid.jacobian = J
