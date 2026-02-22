@@ -1,4 +1,4 @@
-.PHONY: setup test run clean lint lint-fix typecheck
+.PHONY: setup test run clean lint lint-fix typecheck md-lint check
 
 VENV := .venv
 PYTHON := $(VENV)/bin/python
@@ -20,6 +20,11 @@ lint-fix:
 
 typecheck:
 	$(PYTHON) -m mypy src/
+
+md-lint:
+	npx markdownlint-cli2 "**/*.md" "#node_modules"
+
+check: lint typecheck md-lint test
 
 run:
 	$(PYTHON) scripts/run_cylinder.py --mach 0.3 --cfl 0.5 --steps 5000

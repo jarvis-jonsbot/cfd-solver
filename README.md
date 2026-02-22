@@ -17,13 +17,14 @@ A high-performance 2D compressible Euler equations solver with GPU acceleration,
 
 The solver integrates the 2D compressible Euler equations in conservation form:
 
-```
+```text
 ∂U/∂t + ∂F/∂x + ∂G/∂y = 0
 ```
 
 where `U = [ρ, ρu, ρv, ρE]ᵀ` is the vector of conserved variables (density, x-momentum, y-momentum, total energy), and `F`, `G` are the inviscid flux vectors.
 
 **Key Numerical Methods:**
+
 - **Flux scheme**: Roe's approximate Riemann solver computes interface fluxes by solving local 1D Riemann problems with linearized wave structure
 - **Reconstruction**: MUSCL (Monotonic Upstream-centered Scheme for Conservation Laws) with slope limiters achieves second-order accuracy while preserving monotonicity near discontinuities
 - **Time stepping**: RK4 provides fourth-order temporal accuracy with excellent stability properties
@@ -31,7 +32,7 @@ where `U = [ρ, ρu, ρv, ρE]ᵀ` is the vector of conserved variables (density
 
 ## Project Structure
 
-```
+```text
 cfd-solver/
 ├── README.md
 ├── CLAUDE.md              # Developer instructions
@@ -57,6 +58,7 @@ cfd-solver/
 ## Installation
 
 ### Requirements
+
 - Python 3.9+
 - NumPy, Matplotlib
 - (Optional) CuPy 12.0+ for GPU acceleration
@@ -101,6 +103,7 @@ python scripts/run_cylinder.py --help
 ```
 
 Key options:
+
 - `--mach`: Freestream Mach number (default: 0.3)
 - `--alpha`: Angle of attack in degrees (default: 0.0)
 - `--cfl`: CFL number for time step control (default: 0.5)
@@ -151,6 +154,7 @@ pytest tests/ -v
 ```
 
 Individual test modules:
+
 ```bash
 pytest tests/test_sod.py -v      # Shock tube validation
 pytest tests/test_flux.py -v     # Flux routine checks
@@ -174,6 +178,7 @@ Approximate performance on representative hardware:
 Contributions are welcome! Please feel free to submit issues or pull requests.
 
 **Areas for Improvement:**
+
 - Additional boundary conditions (periodic, symmetry)
 - Higher-order reconstruction schemes (WENO)
 - Implicit time stepping for steady-state acceleration
@@ -184,7 +189,7 @@ Contributions are welcome! Please feel free to submit issues or pull requests.
 
 This project is licensed under the MIT License.
 
-```
+```text
 MIT License
 
 Copyright (c) 2026 Jarvis Jonsbot
