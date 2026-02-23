@@ -26,7 +26,7 @@ md-lint:
 check: lint typecheck md-lint test
 
 run:
-	$(PYTHON) scripts/run_cylinder.py --mach 0.3 --cfl 0.5 --steps 5000 --save-every 100
+	$(PYTHON) scripts/run_cylinder.py --mach 0.3 --cfl 0.05 --steps 5000 --save-every 100
 
 animate:
 	$(PYTHON) scripts/animate.py --input output/ --field pressure --output flow.gif --fps 10

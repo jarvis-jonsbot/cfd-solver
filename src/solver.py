@@ -14,6 +14,7 @@ from src.boundary import apply_freestream, apply_wall
 from src.flux import roe_flux_1d
 from src.gas import pressure, sound_speed
 from src.grid import Grid
+from src.numba_kernels import HAS_NUMBA, compute_dt_numba, compute_residual_numba
 from src.reconstruction import muscl_reconstruct
 
 
@@ -40,6 +41,21 @@ def compute_dt(Q, grid: Grid, cfl: float) -> float:
     In curvilinear coordinates, we use the spectral radius of the
     flux Jacobian in each direction.
     """
+    if HAS_NUMBA:
+        import numpy as np
+
+        Qnp = np.asarray(Q)
+        return compute_dt_numba(
+            Qnp,
+            np.asarray(grid.xi_x_area),
+            np.asarray(grid.xi_y_area),
+            np.asarray(grid.eta_x_area),
+            np.asarray(grid.eta_y_area),
+            np.asarray(grid.jacobian),
+            grid.ni,
+            grid.nj,
+            cfl,
+        )
     rho = Q[0]
     u = Q[1] / rho
     v = Q[2] / rho
@@ -67,6 +83,9 @@ def compute_dt(Q, grid: Grid, cfl: float) -> float:
 def compute_residual(Q, grid: Grid) -> object:
     """Compute the spatial residual R(Q) = -(1/J)(dF_hat/dξ + dG_hat/dη).
 
+    Uses Numba-accelerated fused kernel when available, otherwise falls
+    back to vectorized NumPy/CuPy implementation.
+
     Uses MUSCL reconstruction + Roe flux in each coordinate direction.
     Face normals are area-weighted (not divided by J) so the Roe flux
     returns the physical flux through each face. We then divide by J
@@ -79,6 +98,20 @@ def compute_residual(Q, grid: Grid) -> object:
     Returns:
         R: residual, shape (4, ni, nj)
     """
+    if HAS_NUMBA:
+        import numpy as np
+
+        return compute_residual_numba(
+            np.asarray(Q),
+            np.asarray(grid.xi_x_area),
+            np.asarray(grid.xi_y_area),
+            np.asarray(grid.eta_x_area),
+            np.asarray(grid.eta_y_area),
+            np.asarray(grid.jacobian),
+            grid.ni,
+            grid.nj,
+        )
+
     ni = grid.ni
     R = xp.zeros_like(Q)
 
