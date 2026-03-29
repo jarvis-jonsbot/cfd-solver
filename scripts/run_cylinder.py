@@ -20,7 +20,7 @@ from src.boundary import apply_freestream, apply_wall, freestream_state
 from src.gas import pressure
 from src.grid import generate_cylinder_grid
 from src.io import save_solution
-from src.solver import SolverConfig, compute_dt, solve, step_semi_implicit
+from src.solver import SolverConfig, compute_dt, compute_dt_advective, solve, step_semi_implicit
 
 
 def main():
@@ -93,6 +93,7 @@ def main():
     print("Starting solver...")
     if args.semi_implicit:
         print("Using semi-implicit pressure solver (Phase 1)")
+        print("  Time step computed from advective CFL only (acoustic waves treated implicitly)")
         # Manual time loop for semi-implicit
         Q = Q0.copy()
         t = 0.0
@@ -101,8 +102,10 @@ def main():
             apply_wall(Q, grid)
             apply_freestream(Q, grid, args.mach, float(alpha_rad), 1.0, 1.0)
 
-            # Compute time step
-            dt = compute_dt(Q, grid, args.cfl)
+            # Compute time step using ADVECTIVE CFL only — not acoustic.
+            # The semi-implicit scheme treats acoustic waves implicitly, so
+            # stability only requires dt ~ dx/|u|, not dt ~ dx/(|u|+c).
+            dt = compute_dt_advective(Q, grid, args.cfl)
 
             # Semi-implicit step
             Q = step_semi_implicit(Q, dt, grid)
