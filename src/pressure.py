@@ -2,7 +2,7 @@
 
 Solves the variable-coefficient elliptic equation arising from
 implicit treatment of acoustic waves:
-    (I + rho * c^2 * dt^2 * div(1/rho * grad)) p^{n+1} = p^*
+    (I - rho * c^2 * dt^2 * div(1/rho * grad)) p^{n+1} = p^*
 
 Uses finite differences on a uniform grid (Phase 1 simplification).
 """
@@ -19,9 +19,15 @@ def solve_pressure(rho, rho_u, rho_v, c2, dx, dy, dt, p_wall_neumann=True, xp=No
     """Solve implicit pressure equation using conjugate gradient.
 
     Assembles the sparse matrix for:
-        (I + rho * c^2 * dt^2 * div(1/rho * grad)) p^{n+1} = rhs
+        (I - rho * c^2 * dt^2 * div(1/rho * grad)) p^{n+1} = rhs
 
     where rhs is computed from the current pressure estimate p^*.
+
+    The operator is:
+        A = I + L
+    where L_{ij} has negative off-diagonals (standard elliptic form), so
+    the diagonal is 1 + sum(|off-diag|), making A symmetric positive definite
+    for all dt > 0. This ensures CG convergence regardless of CFL.
 
     Args:
         rho: density field, shape (ni, nj)
@@ -63,7 +69,9 @@ def solve_pressure(rho, rho_u, rho_v, c2, dx, dy, dt, p_wall_neumann=True, xp=No
     p_flat = p_guess.ravel()
 
     # Build sparse matrix A for (I + L) p = p_rhs
-    # where L = rho * c^2 * dt^2 * div(1/rho * grad)
+    # where L = -rho * c^2 * dt^2 * div(1/rho * grad)
+    # Off-diagonal entries are NEGATIVE (standard elliptic form).
+    # Diagonal = 1 + sum of |off-diagonals|, ensuring A is SPD.
 
     # Use list-of-lists format for efficient assembly
     data = []
@@ -85,7 +93,8 @@ def solve_pressure(rho, rho_u, rho_v, c2, dx, dy, dt, p_wall_neumann=True, xp=No
         for j in range(nj):
             k = idx(i, j)
 
-            # Diagonal: identity + negative sum of off-diagonals
+            # Diagonal starts at 1 (identity) and accumulates += for each
+            # off-diagonal coupling (standard SPD elliptic assembly)
             diag = 1.0
 
             # Coefficient for this cell
@@ -99,8 +108,8 @@ def solve_pressure(rho, rho_u, rho_v, c2, dx, dy, dt, p_wall_neumann=True, xp=No
 
             rows.append(k)
             cols.append(idx(i_p, j))
-            data.append(a_p)
-            diag -= a_p
+            data.append(-a_p)   # negative off-diagonal (elliptic sign)
+            diag += a_p         # diagonal grows → SPD
 
             # Backward difference at i-1/2
             i_m = (i - 1) % ni
@@ -109,8 +118,8 @@ def solve_pressure(rho, rho_u, rho_v, c2, dx, dy, dt, p_wall_neumann=True, xp=No
 
             rows.append(k)
             cols.append(idx(i_m, j))
-            data.append(a_m)
-            diag -= a_m
+            data.append(-a_m)   # negative off-diagonal
+            diag += a_m         # diagonal grows
 
             # --- y-direction ---
             # Forward difference at j+1/2
@@ -120,8 +129,8 @@ def solve_pressure(rho, rho_u, rho_v, c2, dx, dy, dt, p_wall_neumann=True, xp=No
 
                 rows.append(k)
                 cols.append(idx(i, j + 1))
-                data.append(b_p)
-                diag -= b_p
+                data.append(-b_p)   # negative off-diagonal
+                diag += b_p
 
             # Backward difference at j-1/2
             if j > 0:
@@ -130,8 +139,8 @@ def solve_pressure(rho, rho_u, rho_v, c2, dx, dy, dt, p_wall_neumann=True, xp=No
 
                 rows.append(k)
                 cols.append(idx(i, j - 1))
-                data.append(b_m)
-                diag -= b_m
+                data.append(-b_m)   # negative off-diagonal
+                diag += b_m
             elif p_wall_neumann:
                 # At j=0 wall: Neumann BC dp/dn = 0
                 # Implement as one-sided difference: p[i,0] = p[i,1]
