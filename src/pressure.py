@@ -1,10 +1,17 @@
 """Implicit pressure solver for semi-implicit time integration.
 
 Solves the variable-coefficient elliptic equation arising from
-implicit treatment of acoustic waves:
-    (I - rho * c^2 * dt^2 * div(1/rho * grad)) p^{n+1} = p^*
+implicit treatment of acoustic waves in curvilinear coordinates:
 
-Uses finite differences on a uniform grid (Phase 1 simplification).
+    (I - dt² · ρc² · ∇·(1/ρ ∇)) p^{n+1} = p^*
+
+The Laplacian is expressed in index (ξ, η) coordinates using the
+local metric magnitudes |∇ξ|² = ξ_x² + ξ_y² and |∇η|² = η_x² + η_y²
+so that the pressure operator is consistent with the curvilinear
+gradient used in the momentum correction step.
+
+Uses finite differences on the curvilinear grid (Phase 1: diagonal metric
+terms only, off-diagonal ξ·η cross-terms deferred to Phase 2).
 """
 
 from __future__ import annotations
@@ -15,164 +22,124 @@ import scipy.sparse.linalg as spla
 from src.backend import EPS_TINY, to_numpy
 
 
-def solve_pressure(rho, rho_u, rho_v, c2, dx, dy, dt, p_wall_neumann=True, xp=None):
+def solve_pressure(rho, rho_u, rho_v, c2, xi_x, xi_y, eta_x, eta_y,
+                   dt, p_wall_neumann=True, xp=None):
     """Solve implicit pressure equation using conjugate gradient.
 
     Assembles the sparse matrix for:
-        (I - rho * c^2 * dt^2 * div(1/rho * grad)) p^{n+1} = rhs
+        (I - dt² · ρc² · ∇·(1/ρ ∇)) p^{n+1} = p^*
 
-    where rhs is computed from the current pressure estimate p^*.
+    The spatial operator is discretised in index (ξ, η) coordinates
+    using local metric magnitudes:
+        - ξ-direction: 1/dξ² → |∇ξ|²_i  (= ξ_x² + ξ_y²  at cell i,j)
+        - η-direction: 1/dη² → |∇η|²_i
 
-    The operator is:
-        A = I + L
-    where L_{ij} has negative off-diagonals (standard elliptic form), so
-    the diagonal is 1 + sum(|off-diag|), making A symmetric positive definite
-    for all dt > 0. This ensures CG convergence regardless of CFL.
+    This ensures the pressure Laplacian and the momentum-correction
+    gradient (which uses the same contravariant metrics) are discretised
+    identically — preventing the coordinate mismatch that caused the
+    pressure fluctuations when a uniform dx_avg was used here while
+    exact chain-rule differences were used in the momentum step.
 
     Args:
         rho: density field, shape (ni, nj)
-        rho_u: x-momentum field (for initial pressure guess), shape (ni, nj)
-        rho_v: y-momentum field (for initial pressure guess), shape (ni, nj)
+        rho_u: x-momentum field, shape (ni, nj)
+        rho_v: y-momentum field, shape (ni, nj)
         c2: sound speed squared (gamma * p / rho), shape (ni, nj)
-        dx: grid spacing in x
-        dy: grid spacing in y
+        xi_x:  ∂ξ/∂x contravariant metric, shape (ni, nj)
+        xi_y:  ∂ξ/∂y contravariant metric, shape (ni, nj)
+        eta_x: ∂η/∂x contravariant metric, shape (ni, nj)
+        eta_y: ∂η/∂y contravariant metric, shape (ni, nj)
         dt: time step
-        p_wall_neumann: if True, apply Neumann BC (dp/dn=0) at j=0 wall
+        p_wall_neumann: apply Neumann BC (dp/dn=0) at j=0 wall
         xp: array module (for converting back to backend arrays)
 
     Returns:
         p_new: updated pressure field, shape (ni, nj)
-
-    Note:
-        This implementation assumes uniform grid spacing (dx, dy) for simplicity.
-        Boundary conditions: periodic in i (circumferential), Neumann at j=0 wall,
-        extrapolation at j=nj-1 freestream.
     """
     # Convert to NumPy for scipy sparse solver
-    rho_np = to_numpy(rho)
-    c2_np = to_numpy(c2)
+    rho_np  = to_numpy(rho)
+    c2_np   = to_numpy(c2)
+    xi_x_np  = to_numpy(xi_x)
+    xi_y_np  = to_numpy(xi_y)
+    eta_x_np = to_numpy(eta_x)
+    eta_y_np = to_numpy(eta_y)
 
     ni, nj = rho_np.shape
     n_cells = ni * nj
 
-    # Initial pressure guess from equation of state
+    # Metric magnitudes squared: |∇ξ|² and |∇η|²
+    # These replace 1/dx² and 1/dy² in the stencil, giving a
+    # curvilinear-consistent discrete Laplacian.
+    grad_xi_sq  = xi_x_np**2  + xi_y_np**2    # shape (ni, nj)
+    grad_eta_sq = eta_x_np**2 + eta_y_np**2
+
+    # Initial pressure guess: p ~ rho * c^2 / gamma
     from src.gas import GAMMA
-
-    to_numpy(rho_u) / (rho_np + EPS_TINY)
-    to_numpy(rho_v) / (rho_np + EPS_TINY)
-    # Use a simple estimate: p ~ rho * c^2 / gamma
     p_guess = rho_np * c2_np / GAMMA
+    p_flat  = p_guess.ravel()
 
-    # Flatten arrays for matrix assembly: index = i * nj + j
-    rho_np.ravel()
-    c2_np.ravel()
-    p_flat = p_guess.ravel()
-
-    # Build sparse matrix A for (I + L) p = p_rhs
-    # where L = -rho * c^2 * dt^2 * div(1/rho * grad)
-    # Off-diagonal entries are NEGATIVE (standard elliptic form).
-    # Diagonal = 1 + sum of |off-diagonals|, ensuring A is SPD.
-
-    # Use list-of-lists format for efficient assembly
-    data = []
-    rows = []
-    cols = []
+    data, rows, cols = [], [], []
 
     def idx(i, j):
-        """Convert (i, j) to flat index with periodic wrapping in i."""
         i = i % ni
-        j = max(0, min(j, nj - 1))  # Clamp j
+        j = max(0, min(j, nj - 1))
         return i * nj + j
-
-    # Finite difference stencil for variable-coefficient Laplacian
-    # d/dx(1/rho * dp/dx) ≈ 1/dx^2 * [(1/rho_{i+1/2}) * (p_{i+1} - p_i)
-    #                                  - (1/rho_{i-1/2}) * (p_i - p_{i-1})]
-    # where 1/rho_{i+1/2} = 2/(rho_i + rho_{i+1})  (harmonic average)
 
     for i in range(ni):
         for j in range(nj):
-            k = idx(i, j)
-
-            # Diagonal starts at 1 (identity) and accumulates += for each
-            # off-diagonal coupling (standard SPD elliptic assembly)
+            k    = idx(i, j)
             diag = 1.0
-
-            # Coefficient for this cell
             coef = rho_np[i, j] * c2_np[i, j] * dt * dt
 
-            # --- x-direction (periodic) ---
-            # Forward difference at i+1/2
+            # --- ξ-direction (periodic in i) ---
             i_p = (i + 1) % ni
-            rho_half_p = 2.0 / (rho_np[i, j] + rho_np[i_p, j] + EPS_TINY)
-            a_p = coef * rho_half_p / (dx * dx)
-
-            rows.append(k)
-            cols.append(idx(i_p, j))
-            data.append(-a_p)   # negative off-diagonal (elliptic sign)
-            diag += a_p         # diagonal grows → SPD
-
-            # Backward difference at i-1/2
             i_m = (i - 1) % ni
-            rho_half_m = 2.0 / (rho_np[i, j] + rho_np[i_m, j] + EPS_TINY)
-            a_m = coef * rho_half_m / (dx * dx)
 
-            rows.append(k)
-            cols.append(idx(i_m, j))
-            data.append(-a_m)   # negative off-diagonal
-            diag += a_m         # diagonal grows
+            # Metric magnitude at i+1/2 interface (average of neighbours)
+            gxi_p = 0.5 * (grad_xi_sq[i, j] + grad_xi_sq[i_p, j])
+            rho_h_p = 2.0 / (rho_np[i, j] + rho_np[i_p, j] + EPS_TINY)
+            a_p = coef * rho_h_p * gxi_p
 
-            # --- y-direction ---
-            # Forward difference at j+1/2
+            rows.append(k); cols.append(idx(i_p, j)); data.append(-a_p)
+            diag += a_p
+
+            gxi_m = 0.5 * (grad_xi_sq[i, j] + grad_xi_sq[i_m, j])
+            rho_h_m = 2.0 / (rho_np[i, j] + rho_np[i_m, j] + EPS_TINY)
+            a_m = coef * rho_h_m * gxi_m
+
+            rows.append(k); cols.append(idx(i_m, j)); data.append(-a_m)
+            diag += a_m
+
+            # --- η-direction ---
             if j < nj - 1:
-                rho_half_p = 2.0 / (rho_np[i, j] + rho_np[i, j + 1] + EPS_TINY)
-                b_p = coef * rho_half_p / (dy * dy)
+                geta_p = 0.5 * (grad_eta_sq[i, j] + grad_eta_sq[i, j + 1])
+                rho_h_p = 2.0 / (rho_np[i, j] + rho_np[i, j + 1] + EPS_TINY)
+                b_p = coef * rho_h_p * geta_p
 
-                rows.append(k)
-                cols.append(idx(i, j + 1))
-                data.append(-b_p)   # negative off-diagonal
+                rows.append(k); cols.append(idx(i, j + 1)); data.append(-b_p)
                 diag += b_p
 
-            # Backward difference at j-1/2
             if j > 0:
-                rho_half_m = 2.0 / (rho_np[i, j] + rho_np[i, j - 1] + EPS_TINY)
-                b_m = coef * rho_half_m / (dy * dy)
+                geta_m = 0.5 * (grad_eta_sq[i, j] + grad_eta_sq[i, j - 1])
+                rho_h_m = 2.0 / (rho_np[i, j] + rho_np[i, j - 1] + EPS_TINY)
+                b_m = coef * rho_h_m * geta_m
 
-                rows.append(k)
-                cols.append(idx(i, j - 1))
-                data.append(-b_m)   # negative off-diagonal
+                rows.append(k); cols.append(idx(i, j - 1)); data.append(-b_m)
                 diag += b_m
-            elif p_wall_neumann:
-                # At j=0 wall: Neumann BC dp/dn = 0
-                # Implement as one-sided difference: p[i,0] = p[i,1]
-                # This is already handled by not adding the j-1 term
-                pass
+            # j=0: Neumann — no j-1 term added (dp/dη = 0 at wall)
 
-            # Add diagonal entry
-            rows.append(k)
-            cols.append(k)
-            data.append(diag)
+            rows.append(k); cols.append(k); data.append(diag)
 
-    # Assemble sparse matrix
-    A = sp.coo_matrix((data, (rows, cols)), shape=(n_cells, n_cells))
-    A = A.tocsr()
-
-    # Right-hand side: current pressure estimate
+    A = sp.coo_matrix((data, (rows, cols)), shape=(n_cells, n_cells)).tocsr()
     rhs = p_flat.copy()
 
-    # Solve using conjugate gradient
-    # Use current pressure as initial guess for faster convergence
     p_new_flat, info = spla.cg(A, rhs, x0=p_flat, rtol=1e-6, maxiter=1000)
 
     if info != 0:
         import warnings
-
         warnings.warn(f"Pressure solve CG did not converge: info={info}", stacklevel=2)
 
-    # Reshape to 2D
     p_new = p_new_flat.reshape((ni, nj))
-
-    # Convert back to backend array if xp provided
     if xp is not None:
         p_new = xp.array(p_new)
-
     return p_new
