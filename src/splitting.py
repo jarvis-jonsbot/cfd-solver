@@ -29,20 +29,26 @@ def split_flux_x(Q, gas):
     p = pressure(Q)
 
     # Advective part: mass transport without pressure
-    F_advect = xp.stack([
-        rho * u,        # rho*u
-        Q[1] * u,       # rho*u^2
-        Q[2] * u,       # rho*u*v
-        Q[3] * u,       # rho*E*u
-    ], axis=0)
+    F_advect = xp.stack(
+        [
+            rho * u,  # rho*u
+            Q[1] * u,  # rho*u^2
+            Q[2] * u,  # rho*u*v
+            Q[3] * u,  # rho*E*u
+        ],
+        axis=0,
+    )
 
     # Acoustic part: pressure contribution only
-    F_acoustic = xp.stack([
-        xp.zeros_like(rho),  # no mass flux from pressure
-        p,                    # pressure force in x-momentum
-        xp.zeros_like(p),    # no pressure force in y-momentum
-        p * u,                # pressure work in energy
-    ], axis=0)
+    F_acoustic = xp.stack(
+        [
+            xp.zeros_like(rho),  # no mass flux from pressure
+            p,  # pressure force in x-momentum
+            xp.zeros_like(p),  # no pressure force in y-momentum
+            p * u,  # pressure work in energy
+        ],
+        axis=0,
+    )
 
     return F_advect, F_acoustic
 
@@ -66,19 +72,25 @@ def split_flux_y(Q, gas):
     p = pressure(Q)
 
     # Advective part: mass transport without pressure
-    G_advect = xp.stack([
-        rho * v,        # rho*v
-        Q[1] * v,       # rho*u*v
-        Q[2] * v,       # rho*v^2
-        Q[3] * v,       # rho*E*v
-    ], axis=0)
+    G_advect = xp.stack(
+        [
+            rho * v,  # rho*v
+            Q[1] * v,  # rho*u*v
+            Q[2] * v,  # rho*v^2
+            Q[3] * v,  # rho*E*v
+        ],
+        axis=0,
+    )
 
     # Acoustic part: pressure contribution only
-    G_acoustic = xp.stack([
-        xp.zeros_like(rho),  # no mass flux from pressure
-        xp.zeros_like(p),    # no pressure force in x-momentum
-        p,                    # pressure force in y-momentum
-        p * v,                # pressure work in energy
-    ], axis=0)
+    G_acoustic = xp.stack(
+        [
+            xp.zeros_like(rho),  # no mass flux from pressure
+            xp.zeros_like(p),  # no pressure force in x-momentum
+            p,  # pressure force in y-momentum
+            p * v,  # pressure work in energy
+        ],
+        axis=0,
+    )
 
     return G_advect, G_acoustic

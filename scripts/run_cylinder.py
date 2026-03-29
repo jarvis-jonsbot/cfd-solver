@@ -36,7 +36,11 @@ def main():
     parser.add_argument("--output", type=str, default="output", help="Output directory")
     parser.add_argument("--print-every", type=int, default=100, help="Print interval")
     parser.add_argument("--save-every", type=int, default=1000, help="Save interval")
-    parser.add_argument("--semi-implicit", action="store_true", help="Use semi-implicit pressure solver")
+    parser.add_argument(
+        "--semi-implicit",
+        action="store_true",
+        help="Use semi-implicit pressure solver",
+    )
     args = parser.parse_args()
 
     alpha_rad = args.alpha * xp.pi / 180.0

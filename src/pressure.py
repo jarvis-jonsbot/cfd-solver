@@ -9,7 +9,6 @@ Uses finite differences on a uniform grid (Phase 1 simplification).
 
 from __future__ import annotations
 
-import numpy as np
 import scipy.sparse as sp
 import scipy.sparse.linalg as spla
 
@@ -52,14 +51,15 @@ def solve_pressure(rho, rho_u, rho_v, c2, dx, dy, dt, p_wall_neumann=True, xp=No
 
     # Initial pressure guess from equation of state
     from src.gas import GAMMA
-    u = to_numpy(rho_u) / (rho_np + EPS_TINY)
-    v = to_numpy(rho_v) / (rho_np + EPS_TINY)
+
+    to_numpy(rho_u) / (rho_np + EPS_TINY)
+    to_numpy(rho_v) / (rho_np + EPS_TINY)
     # Use a simple estimate: p ~ rho * c^2 / gamma
     p_guess = rho_np * c2_np / GAMMA
 
     # Flatten arrays for matrix assembly: index = i * nj + j
-    rho_flat = rho_np.ravel()
-    c2_flat = c2_np.ravel()
+    rho_np.ravel()
+    c2_np.ravel()
     p_flat = p_guess.ravel()
 
     # Build sparse matrix A for (I + L) p = p_rhs
@@ -156,6 +156,7 @@ def solve_pressure(rho, rho_u, rho_v, c2, dx, dy, dt, p_wall_neumann=True, xp=No
 
     if info != 0:
         import warnings
+
         warnings.warn(f"Pressure solve CG did not converge: info={info}", stacklevel=2)
 
     # Reshape to 2D

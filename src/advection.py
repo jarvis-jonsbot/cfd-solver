@@ -67,11 +67,6 @@ def sl_advect(f, u, v, dx, dy, dt):
     f11 = f_pad[i1, j1]
 
     # Bilinear interpolation weights
-    f_new = (
-        f00 * (1 - fi) * (1 - fj)
-        + f10 * fi * (1 - fj)
-        + f01 * (1 - fi) * fj
-        + f11 * fi * fj
-    )
+    f_new = f00 * (1 - fi) * (1 - fj) + f10 * fi * (1 - fj) + f01 * (1 - fi) * fj + f11 * fi * fj
 
     return f_new

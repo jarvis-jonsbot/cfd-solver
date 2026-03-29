@@ -228,41 +228,23 @@ def step_semi_implicit(Q, dt, grid: Grid, bcs=None):
         i_p = (i + 1) % ni
         for j in range(nj):
             # Upwind for rho
-            if u[i, j] > 0:
-                flux_rho_x = u[i, j] * rho[i_m, j]
-            else:
-                flux_rho_x = u[i, j] * rho[i, j]
+            flux_rho_x = u[i, j] * rho[i_m, j] if u[i, j] > 0 else u[i, j] * rho[i, j]
 
-            if u[i_p, j] > 0:
-                flux_rho_x_p = u[i_p, j] * rho[i, j]
-            else:
-                flux_rho_x_p = u[i_p, j] * rho[i_p, j]
+            flux_rho_x_p = u[i_p, j] * rho[i, j] if u[i_p, j] > 0 else u[i_p, j] * rho[i_p, j]
 
             rho_new[i, j] -= dt / dx_avg * (flux_rho_x_p - flux_rho_x)
 
             # Upwind for rho*u (advective part: rho*u^2)
-            if u[i, j] > 0:
-                flux_u_x = u[i, j] * Q[1, i_m, j]
-            else:
-                flux_u_x = u[i, j] * Q[1, i, j]
+            flux_u_x = u[i, j] * Q[1, i_m, j] if u[i, j] > 0 else u[i, j] * Q[1, i, j]
 
-            if u[i_p, j] > 0:
-                flux_u_x_p = u[i_p, j] * Q[1, i, j]
-            else:
-                flux_u_x_p = u[i_p, j] * Q[1, i_p, j]
+            flux_u_x_p = u[i_p, j] * Q[1, i, j] if u[i_p, j] > 0 else u[i_p, j] * Q[1, i_p, j]
 
             rho_u_new[i, j] -= dt / dx_avg * (flux_u_x_p - flux_u_x)
 
             # Upwind for rho*v (advective part: rho*u*v)
-            if u[i, j] > 0:
-                flux_v_x = u[i, j] * Q[2, i_m, j]
-            else:
-                flux_v_x = u[i, j] * Q[2, i, j]
+            flux_v_x = u[i, j] * Q[2, i_m, j] if u[i, j] > 0 else u[i, j] * Q[2, i, j]
 
-            if u[i_p, j] > 0:
-                flux_v_x_p = u[i_p, j] * Q[2, i, j]
-            else:
-                flux_v_x_p = u[i_p, j] * Q[2, i_p, j]
+            flux_v_x_p = u[i_p, j] * Q[2, i, j] if u[i_p, j] > 0 else u[i_p, j] * Q[2, i_p, j]
 
             rho_v_new[i, j] -= dt / dx_avg * (flux_v_x_p - flux_v_x)
 
@@ -273,41 +255,23 @@ def step_semi_implicit(Q, dt, grid: Grid, bcs=None):
             j_p = min(nj - 1, j + 1)
 
             # Upwind for rho
-            if v[i, j] > 0:
-                flux_rho_y = v[i, j] * rho[i, j_m]
-            else:
-                flux_rho_y = v[i, j] * rho[i, j]
+            flux_rho_y = v[i, j] * rho[i, j_m] if v[i, j] > 0 else v[i, j] * rho[i, j]
 
-            if v[i, j_p] > 0:
-                flux_rho_y_p = v[i, j_p] * rho[i, j]
-            else:
-                flux_rho_y_p = v[i, j_p] * rho[i, j_p]
+            flux_rho_y_p = v[i, j_p] * rho[i, j] if v[i, j_p] > 0 else v[i, j_p] * rho[i, j_p]
 
             rho_new[i, j] -= dt / dy_avg * (flux_rho_y_p - flux_rho_y)
 
             # Upwind for rho*u (advective part: rho*u*v)
-            if v[i, j] > 0:
-                flux_u_y = v[i, j] * Q[1, i, j_m]
-            else:
-                flux_u_y = v[i, j] * Q[1, i, j]
+            flux_u_y = v[i, j] * Q[1, i, j_m] if v[i, j] > 0 else v[i, j] * Q[1, i, j]
 
-            if v[i, j_p] > 0:
-                flux_u_y_p = v[i, j_p] * Q[1, i, j]
-            else:
-                flux_u_y_p = v[i, j_p] * Q[1, i, j_p]
+            flux_u_y_p = v[i, j_p] * Q[1, i, j] if v[i, j_p] > 0 else v[i, j_p] * Q[1, i, j_p]
 
             rho_u_new[i, j] -= dt / dy_avg * (flux_u_y_p - flux_u_y)
 
             # Upwind for rho*v (advective part: rho*v^2)
-            if v[i, j] > 0:
-                flux_v_y = v[i, j] * Q[2, i, j_m]
-            else:
-                flux_v_y = v[i, j] * Q[2, i, j]
+            flux_v_y = v[i, j] * Q[2, i, j_m] if v[i, j] > 0 else v[i, j] * Q[2, i, j]
 
-            if v[i, j_p] > 0:
-                flux_v_y_p = v[i, j_p] * Q[2, i, j]
-            else:
-                flux_v_y_p = v[i, j_p] * Q[2, i, j_p]
+            flux_v_y_p = v[i, j_p] * Q[2, i, j] if v[i, j_p] > 0 else v[i, j_p] * Q[2, i, j_p]
 
             rho_v_new[i, j] -= dt / dy_avg * (flux_v_y_p - flux_v_y)
 
@@ -316,8 +280,7 @@ def step_semi_implicit(Q, dt, grid: Grid, bcs=None):
 
     # --- Step 3: Solve implicit pressure equation ---
     p_new = solve_pressure(
-        rho_new, rho_u_new, rho_v_new, c2, dx_avg, dy_avg, dt,
-        p_wall_neumann=True, xp=xp
+        rho_new, rho_u_new, rho_v_new, c2, dx_avg, dy_avg, dt, p_wall_neumann=True, xp=xp
     )
 
     # --- Step 4: Apply pressure gradient correction to momentum ---

@@ -41,7 +41,7 @@ def _build_triangulation(x: np.ndarray, y: np.ndarray) -> mtri.Triangulation:
     """
     ni, nj = x.shape
 
-    x_flat = x.ravel()   # length ni*nj
+    x_flat = x.ravel()  # length ni*nj
     y_flat = y.ravel()
 
     def node(i: int, j: int) -> int:
@@ -49,13 +49,13 @@ def _build_triangulation(x: np.ndarray, y: np.ndarray) -> mtri.Triangulation:
         return (i % ni) * nj + j
 
     triangles = []
-    for i in range(ni):          # periodic: i+1 wraps via modulo
+    for i in range(ni):  # periodic: i+1 wraps via modulo
         for j in range(nj - 1):  # no wrap in radial direction
             # Quad corners (counter-clockwise)
-            n00 = node(i,     j)
-            n10 = node(i + 1, j)      # wraps to 0 when i == ni-1
+            n00 = node(i, j)
+            n10 = node(i + 1, j)  # wraps to 0 when i == ni-1
             n11 = node(i + 1, j + 1)
-            n01 = node(i,     j + 1)
+            n01 = node(i, j + 1)
             # Split into two triangles
             triangles.append((n00, n10, n11))
             triangles.append((n00, n11, n01))

@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 
 from src.backend import xp
-from src.gas import GAMMA, pressure, primitive_to_conservative
+from src.gas import pressure, primitive_to_conservative
 from src.grid import Grid
 from src.solver import step_semi_implicit
 from src.splitting import split_flux_x, split_flux_y
@@ -27,19 +27,25 @@ def test_flux_split_sums_to_original():
     Q = primitive_to_conservative(W)
 
     # Compute Euler fluxes manually
-    F_euler_x = xp.stack([
-        rho * u,
-        rho * u**2 + p,
-        rho * u * v,
-        (Q[3] + p) * u,
-    ], axis=0)
+    F_euler_x = xp.stack(
+        [
+            rho * u,
+            rho * u**2 + p,
+            rho * u * v,
+            (Q[3] + p) * u,
+        ],
+        axis=0,
+    )
 
-    G_euler_y = xp.stack([
-        rho * v,
-        rho * u * v,
-        rho * v**2 + p,
-        (Q[3] + p) * v,
-    ], axis=0)
+    G_euler_y = xp.stack(
+        [
+            rho * v,
+            rho * u * v,
+            rho * v**2 + p,
+            (Q[3] + p) * v,
+        ],
+        axis=0,
+    )
 
     # Split fluxes
     F_advect, F_acoustic = split_flux_x(Q, None)
@@ -79,7 +85,7 @@ def test_semi_implicit_no_nan():
     # Create a minimal grid with uniform metrics
     x = np.linspace(0, 1, ni)
     y = np.linspace(0, 0.2, nj)
-    X, Y = np.meshgrid(x, y, indexing='ij')
+    X, Y = np.meshgrid(x, y, indexing="ij")
 
     # Simple uniform grid metrics
     dx = x[1] - x[0]
@@ -106,12 +112,12 @@ def test_semi_implicit_no_nan():
     p = xp.ones((ni, nj))
 
     # Left state: high pressure
-    rho[:ni // 2, :] = 1.0
-    p[:ni // 2, :] = 1.0
+    rho[: ni // 2, :] = 1.0
+    p[: ni // 2, :] = 1.0
 
     # Right state: low pressure
-    rho[ni // 2:, :] = 0.125
-    p[ni // 2:, :] = 0.1
+    rho[ni // 2 :, :] = 0.125
+    p[ni // 2 :, :] = 0.1
 
     W = xp.stack([rho, u, v, p], axis=0)
     Q = primitive_to_conservative(W)
@@ -137,7 +143,7 @@ def test_mass_conservation():
     # Create a minimal uniform grid
     x = np.linspace(0, 1, ni)
     y = np.linspace(0, 0.2, nj)
-    X, Y = np.meshgrid(x, y, indexing='ij')
+    X, Y = np.meshgrid(x, y, indexing="ij")
 
     dx = x[1] - x[0]
     dy = y[1] - y[0]
@@ -168,7 +174,7 @@ def test_mass_conservation():
 
     # Run 50 steps
     dt = 0.0001
-    for step in range(50):
+    for _step in range(50):
         Q = step_semi_implicit(Q, dt, grid)
 
     # Compute final mass
