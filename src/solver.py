@@ -35,12 +35,13 @@ class SolverConfig:
 
 
 def compute_dt(Q, grid: Grid, cfl: float) -> float:
-    """Compute stable time step from CFL condition.
+    """Compute stable time step from CFL condition (acoustic + advective).
 
-    dt = CFL * min(dx / (|u| + a))
+    dt = CFL * min(|J| / (|U| + a * |n|))
 
     In curvilinear coordinates, we use the spectral radius of the
-    flux Jacobian in each direction.
+    flux Jacobian in each direction. Includes both advective and acoustic
+    wave speeds — appropriate for the explicit RK4 integrator.
     """
     if HAS_NUMBA:
         import numpy as np
@@ -77,6 +78,40 @@ def compute_dt(Q, grid: Grid, cfl: float) -> float:
     sr_eta = xp.abs(U_eta) + a * eta_mag
 
     # dt = CFL * |J| / (sr_xi + sr_eta)
+    dt_local = cfl * J_abs / (sr_xi + sr_eta + EPS_TINY)
+    return float(xp.min(dt_local))
+
+
+def compute_dt_advective(Q, grid: Grid, cfl: float) -> float:
+    """Compute stable time step using advective CFL only (no sound speed).
+
+    dt = CFL * min(|J| / |U|)
+
+    Omits the acoustic wave speed from the spectral radius. This is the
+    correct CFL criterion for the semi-implicit integrator, which treats
+    acoustic waves implicitly and is only constrained by the advective CFL.
+    Using the full acoustic CFL here would defeat the purpose of the
+    semi-implicit scheme (no large-dt benefit at low Mach numbers).
+
+    Args:
+        Q: conservative variables, shape (4, ni, nj)
+        grid: Grid object
+        cfl: advective CFL number (can be > 1 for semi-implicit)
+
+    Returns:
+        dt: stable advective time step
+    """
+    rho = Q[0]
+    u = Q[1] / rho
+    v = Q[2] / rho
+
+    J_abs = xp.abs(grid.jacobian) + EPS_TINY
+    U_xi = u * grid.xi_x_area + v * grid.xi_y_area
+    U_eta = u * grid.eta_x_area + v * grid.eta_y_area
+
+    sr_xi = xp.abs(U_xi)
+    sr_eta = xp.abs(U_eta)
+
     dt_local = cfl * J_abs / (sr_xi + sr_eta + EPS_TINY)
     return float(xp.min(dt_local))
 
@@ -188,7 +223,7 @@ def step_semi_implicit(Q, dt, grid: Grid, bcs=None):
 
     Args:
         Q: conservative state, shape (4, ni, nj)
-        dt: time step
+        dt: time step (should be based on advective CFL via compute_dt_advective)
         grid: Grid object (used for dx, dy estimates)
         bcs: boundary condition dict (unused in Phase 1)
 
