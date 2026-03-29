@@ -16,10 +16,11 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.backend import xp
-from src.boundary import freestream_state
+from src.boundary import apply_freestream, apply_wall, freestream_state
+from src.gas import pressure
 from src.grid import generate_cylinder_grid
 from src.io import save_solution
-from src.solver import SolverConfig, solve
+from src.solver import SolverConfig, compute_dt, solve, step_semi_implicit
 
 
 def main():
@@ -35,6 +36,7 @@ def main():
     parser.add_argument("--output", type=str, default="output", help="Output directory")
     parser.add_argument("--print-every", type=int, default=100, help="Print interval")
     parser.add_argument("--save-every", type=int, default=1000, help="Save interval")
+    parser.add_argument("--semi-implicit", action="store_true", help="Use semi-implicit pressure solver")
     args = parser.parse_args()
 
     alpha_rad = args.alpha * xp.pi / 180.0
@@ -85,7 +87,41 @@ def main():
 
     # Run solver
     print("Starting solver...")
-    Q_final = solve(Q0, grid, config, callback=save_callback)
+    if args.semi_implicit:
+        print("Using semi-implicit pressure solver (Phase 1)")
+        # Manual time loop for semi-implicit
+        Q = Q0.copy()
+        t = 0.0
+        for step in range(1, args.steps + 1):
+            # Apply boundary conditions
+            apply_wall(Q, grid)
+            apply_freestream(Q, grid, args.mach, float(alpha_rad), 1.0, 1.0)
+
+            # Compute time step
+            dt = compute_dt(Q, grid, args.cfl)
+
+            # Semi-implicit step
+            Q = step_semi_implicit(Q, dt, grid)
+            t += dt
+
+            if step % args.print_every == 0:
+                p = pressure(Q)
+                rho_min = float(xp.min(Q[0, :, 1:-1]))
+                rho_max = float(xp.max(Q[0, :, 1:-1]))
+                p_min = float(xp.min(p[:, 1:-1]))
+                p_max = float(xp.max(p[:, 1:-1]))
+                print(
+                    f"Step {step:6d}  t={t:.6f}  dt={dt:.2e}  "
+                    f"rho=[{rho_min:.4f}, {rho_max:.4f}]  "
+                    f"p=[{p_min:.4f}, {p_max:.4f}]"
+                )
+
+            if step % args.save_every == 0:
+                save_callback(step, t, Q)
+
+        Q_final = Q
+    else:
+        Q_final = solve(Q0, grid, config, callback=save_callback)
 
     # Save final solution
     save_solution(Q_final, grid, f"{args.output}/solution_final.npz")

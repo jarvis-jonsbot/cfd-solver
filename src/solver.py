@@ -12,9 +12,10 @@ from typing import Callable
 from src.backend import EPS_TINY, xp
 from src.boundary import apply_freestream, apply_wall
 from src.flux import roe_flux_1d
-from src.gas import pressure, sound_speed
+from src.gas import GAMMA, pressure, sound_speed
 from src.grid import Grid
 from src.numba_kernels import HAS_NUMBA, compute_dt_numba, compute_residual_numba
+from src.pressure import solve_pressure
 from src.reconstruction import muscl_reconstruct
 
 
@@ -170,6 +171,180 @@ def compute_residual(Q, grid: Grid) -> object:
     R /= xp.abs(grid.jacobian[None, :, :]) + EPS_TINY
 
     return R
+
+
+def step_semi_implicit(Q, dt, grid: Grid, bcs=None):
+    """One semi-implicit time step using flux splitting.
+
+    Algorithm:
+    1. Extract primitive variables (rho, u, v, p)
+    2. Compute explicit advective update for (rho, rho_u, rho_v) using first-order upwind
+    3. Compute c^2 = gamma * p / rho
+    4. Solve implicit pressure equation -> p^{n+1}
+    5. Apply pressure gradient correction to momentum
+    6. Recompute energy from updated pressure and velocities
+    7. Apply boundary conditions
+    8. Return Q^{n+1}
+
+    Args:
+        Q: conservative state, shape (4, ni, nj)
+        dt: time step
+        grid: Grid object (used for dx, dy estimates)
+        bcs: boundary condition dict (unused in Phase 1)
+
+    Returns:
+        Q_new: updated conservative state, shape (4, ni, nj)
+
+    Note:
+        Phase 1 assumes uniform grid spacing. Uses simple first-order upwind
+        for advective fluxes. Boundary conditions are periodic for now.
+    """
+    ni, nj = Q.shape[1], Q.shape[2]
+
+    # Extract primitive variables
+    rho = Q[0]
+    u = Q[1] / rho
+    v = Q[2] / rho
+    p = pressure(Q)
+
+    # Estimate uniform grid spacing from grid metrics
+    # Use average cell size as approximation (Phase 1 simplification)
+    dx_avg = float(xp.mean(1.0 / xp.sqrt(grid.xi_x_area**2 + grid.xi_y_area**2)))
+    dy_avg = float(xp.mean(1.0 / xp.sqrt(grid.eta_x_area**2 + grid.eta_y_area**2)))
+
+    # --- Step 1: Explicit advective update for mass and momentum ---
+    # Simple first-order upwind for advective fluxes
+    # d(rho)/dt + d(rho*u)/dx + d(rho*v)/dy = 0
+    # d(rho*u)/dt + d(rho*u^2)/dx + d(rho*u*v)/dy = 0  (advective part only)
+    # d(rho*v)/dt + d(rho*u*v)/dx + d(rho*v^2)/dy = 0  (advective part only)
+
+    rho_new = rho.copy()
+    rho_u_new = Q[1].copy()
+    rho_v_new = Q[2].copy()
+
+    # First-order upwind in x (periodic)
+    for i in range(ni):
+        i_m = (i - 1) % ni
+        i_p = (i + 1) % ni
+        for j in range(nj):
+            # Upwind for rho
+            if u[i, j] > 0:
+                flux_rho_x = u[i, j] * rho[i_m, j]
+            else:
+                flux_rho_x = u[i, j] * rho[i, j]
+
+            if u[i_p, j] > 0:
+                flux_rho_x_p = u[i_p, j] * rho[i, j]
+            else:
+                flux_rho_x_p = u[i_p, j] * rho[i_p, j]
+
+            rho_new[i, j] -= dt / dx_avg * (flux_rho_x_p - flux_rho_x)
+
+            # Upwind for rho*u (advective part: rho*u^2)
+            if u[i, j] > 0:
+                flux_u_x = u[i, j] * Q[1, i_m, j]
+            else:
+                flux_u_x = u[i, j] * Q[1, i, j]
+
+            if u[i_p, j] > 0:
+                flux_u_x_p = u[i_p, j] * Q[1, i, j]
+            else:
+                flux_u_x_p = u[i_p, j] * Q[1, i_p, j]
+
+            rho_u_new[i, j] -= dt / dx_avg * (flux_u_x_p - flux_u_x)
+
+            # Upwind for rho*v (advective part: rho*u*v)
+            if u[i, j] > 0:
+                flux_v_x = u[i, j] * Q[2, i_m, j]
+            else:
+                flux_v_x = u[i, j] * Q[2, i, j]
+
+            if u[i_p, j] > 0:
+                flux_v_x_p = u[i_p, j] * Q[2, i, j]
+            else:
+                flux_v_x_p = u[i_p, j] * Q[2, i_p, j]
+
+            rho_v_new[i, j] -= dt / dx_avg * (flux_v_x_p - flux_v_x)
+
+    # First-order upwind in y (periodic for now)
+    for i in range(ni):
+        for j in range(nj):
+            j_m = max(0, j - 1)  # Clamp at boundaries
+            j_p = min(nj - 1, j + 1)
+
+            # Upwind for rho
+            if v[i, j] > 0:
+                flux_rho_y = v[i, j] * rho[i, j_m]
+            else:
+                flux_rho_y = v[i, j] * rho[i, j]
+
+            if v[i, j_p] > 0:
+                flux_rho_y_p = v[i, j_p] * rho[i, j]
+            else:
+                flux_rho_y_p = v[i, j_p] * rho[i, j_p]
+
+            rho_new[i, j] -= dt / dy_avg * (flux_rho_y_p - flux_rho_y)
+
+            # Upwind for rho*u (advective part: rho*u*v)
+            if v[i, j] > 0:
+                flux_u_y = v[i, j] * Q[1, i, j_m]
+            else:
+                flux_u_y = v[i, j] * Q[1, i, j]
+
+            if v[i, j_p] > 0:
+                flux_u_y_p = v[i, j_p] * Q[1, i, j]
+            else:
+                flux_u_y_p = v[i, j_p] * Q[1, i, j_p]
+
+            rho_u_new[i, j] -= dt / dy_avg * (flux_u_y_p - flux_u_y)
+
+            # Upwind for rho*v (advective part: rho*v^2)
+            if v[i, j] > 0:
+                flux_v_y = v[i, j] * Q[2, i, j_m]
+            else:
+                flux_v_y = v[i, j] * Q[2, i, j]
+
+            if v[i, j_p] > 0:
+                flux_v_y_p = v[i, j_p] * Q[2, i, j]
+            else:
+                flux_v_y_p = v[i, j_p] * Q[2, i, j_p]
+
+            rho_v_new[i, j] -= dt / dy_avg * (flux_v_y_p - flux_v_y)
+
+    # --- Step 2: Compute c^2 for pressure solve ---
+    c2 = GAMMA * p / xp.maximum(rho, EPS_TINY)
+
+    # --- Step 3: Solve implicit pressure equation ---
+    p_new = solve_pressure(
+        rho_new, rho_u_new, rho_v_new, c2, dx_avg, dy_avg, dt,
+        p_wall_neumann=True, xp=xp
+    )
+
+    # --- Step 4: Apply pressure gradient correction to momentum ---
+    # d(rho*u)/dt = -dp/dx * dt  (implicit pressure gradient)
+    # d(rho*v)/dt = -dp/dy * dt
+    for i in range(ni):
+        i_p = (i + 1) % ni
+        i_m = (i - 1) % ni
+        for j in range(nj):
+            # Central difference for pressure gradient
+            dp_dx = (p_new[i_p, j] - p_new[i_m, j]) / (2.0 * dx_avg)
+            rho_u_new[i, j] -= dt * dp_dx
+
+            j_p = min(nj - 1, j + 1)
+            j_m = max(0, j - 1)
+            dp_dy = (p_new[i, j_p] - p_new[i, j_m]) / (2.0 * dy_avg)
+            rho_v_new[i, j] -= dt * dp_dy
+
+    # --- Step 5: Recompute energy from updated pressure and velocities ---
+    u_new = rho_u_new / xp.maximum(rho_new, EPS_TINY)
+    v_new = rho_v_new / xp.maximum(rho_new, EPS_TINY)
+    rho_E_new = p_new / (GAMMA - 1.0) + 0.5 * rho_new * (u_new**2 + v_new**2)
+
+    # Assemble updated state
+    Q_new = xp.stack([rho_new, rho_u_new, rho_v_new, rho_E_new], axis=0)
+
+    return Q_new
 
 
 def solve(Q0, grid: Grid, config: SolverConfig, callback: Callable | None = None) -> object:
