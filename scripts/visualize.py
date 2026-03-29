@@ -22,54 +22,68 @@ from matplotlib.patches import Circle
 from src.gas import GAMMA
 
 
-def _build_triangulation(x: np.ndarray, y: np.ndarray) -> mtri.Triangulation:
+def _build_triangulation(x: np.ndarray, y: np.ndarray) -> tuple[mtri.Triangulation, np.ndarray]:
     """Build an unstructured Triangulation from an O-grid (ni x nj) array.
 
     The O-grid is periodic in the circumferential (i) direction: the last
-    column (i = ni-1) is spatially adjacent to the first (i = 0).  Naively
-    passing the 2-D x/y arrays to ``contourf`` causes matplotlib to draw a
-    spurious degenerate triangle across the periodic seam.
+    column (i = ni-1) is spatially adjacent to the first (i = 0).  Two
+    approaches fail here:
 
-    Instead we:
-      1. Flatten the (ni, nj) node arrays to 1-D (row-major: node = i*nj + j).
-      2. Build quads for every (i, j) cell — including the wrap-around quads
-         that connect column ni-1 back to column 0.
-      3. Split each quad into two triangles and pass them to Triangulation.
+    1. Naive: passing the raw (ni, nj) arrays leaves a missing wedge at the
+       seam because matplotlib has no way to know i=0 and i=ni-1 are adjacent.
 
-    Returns a Triangulation that correctly captures the O-grid topology with
-    no missing region or seam artifact.
+    2. Modular triangles (previous approach): building quads with ``node(i+1)
+       = node(0)`` for the last ring produces *degenerate* triangles in
+       physical (x, y) space — one vertex is at theta=0 and the other at
+       theta≈2π, which are the same physical point but distinct nodes.
+       matplotlib renders these as a hair-thin strip that appears as a gap.
+
+    Correct approach: append a *phantom closing column* (i = ni) that is a
+    copy of column i = 0 in both coordinates and scalar values.  The seam
+    quad (i = ni-1, i = ni) then has proper finite extent in (x, y), giving
+    tricontourf a well-formed triangle to interpolate across.
+
+    Returns:
+        (triang, idx_map) where idx_map is an index array of length
+        (ni+1)*nj that maps flat phantom-grid indices back to the original
+        (ni, nj) scalar array.  Use it as:  val_closed = val.ravel()[idx_map]
     """
     ni, nj = x.shape
 
-    x_flat = x.ravel()  # length ni*nj
-    y_flat = y.ravel()
+    # Close the grid: append column i=0 as a phantom column i=ni
+    xc = np.concatenate([x, x[:1, :]], axis=0)   # (ni+1, nj)
+    yc = np.concatenate([y, y[:1, :]], axis=0)
 
-    def node(i: int, j: int) -> int:
-        """Global node index, with periodic wrap in i."""
-        return (i % ni) * nj + j
+    # Index map: phantom node (i, j) → original node (i % ni, j)
+    orig_i = np.arange(ni + 1) % ni              # (ni+1,)
+    idx_map = (orig_i[:, None] * nj + np.arange(nj)[None, :]).ravel()  # (ni+1)*nj
 
+    x_flat = xc.ravel()
+    y_flat = yc.ravel()
+
+    ni1 = ni + 1  # number of rows in extended grid
     triangles = []
-    for i in range(ni):  # periodic: i+1 wraps via modulo
-        for j in range(nj - 1):  # no wrap in radial direction
-            # Quad corners (counter-clockwise)
-            n00 = node(i, j)
-            n10 = node(i + 1, j)  # wraps to 0 when i == ni-1
-            n11 = node(i + 1, j + 1)
-            n01 = node(i, j + 1)
-            # Split into two triangles
+    for i in range(ni):           # ni quads; the last one bridges the seam
+        for j in range(nj - 1):
+            n00 = i       * nj + j
+            n10 = (i + 1) * nj + j       # phantom column when i == ni-1
+            n11 = (i + 1) * nj + j + 1
+            n01 = i       * nj + j + 1
             triangles.append((n00, n10, n11))
             triangles.append((n00, n11, n01))
 
     triangles = np.array(triangles, dtype=np.int32)
-    return mtri.Triangulation(x_flat, y_flat, triangles)
+    triang = mtri.Triangulation(x_flat, y_flat, triangles)
+    return triang, idx_map
 
 
 def load_and_plot(filepath: str, field: str = "pressure", save: bool = False):
     """Load solution and create contour plot using unstructured triangulation.
 
-    Using ``matplotlib.tri.Triangulation`` instead of the raw structured arrays
+    Using a phantom-closing column approach with ``matplotlib.tri.Triangulation``
     correctly handles the O-grid's periodic seam in the circumferential
-    direction, eliminating the spurious no-data triangle behind the cylinder.
+    direction, eliminating both the spurious no-data gap and the degenerate
+    near-zero-area seam triangle that caused rendering artifacts.
     """
     data = np.load(filepath)
     Q = data["Q"]
@@ -98,23 +112,26 @@ def load_and_plot(filepath: str, field: str = "pressure", save: bool = False):
 
     val, title, cmap = fields[field]
 
-    # Build topology-aware triangulation (handles periodic O-grid seam)
-    triang = _build_triangulation(x, y)
-    val_flat = val.ravel()
+    # Build topology-aware triangulation with phantom closing column.
+    # idx_map remaps phantom grid flat indices → original (ni*nj) flat indices.
+    triang, idx_map = _build_triangulation(x, y)
+
+    # Apply idx_map to get scalar values at phantom-grid nodes
+    val_closed = val.ravel()[idx_map]
 
     # Mask triangles whose centroid falls inside the cylinder (r < r_cyl).
     # These cells are inside the body and should not be rendered.
     r_cylinder = 0.5
-    xm = x.ravel()[triang.triangles].mean(axis=1)
-    ym = y.ravel()[triang.triangles].mean(axis=1)
+    xm = triang.x[triang.triangles].mean(axis=1)
+    ym = triang.y[triang.triangles].mean(axis=1)
     triang.set_mask(xm**2 + ym**2 < r_cylinder**2)
 
     fig, ax = plt.subplots(1, 1, figsize=(10, 10))
 
     levels = 40
-    cf = ax.tricontourf(triang, val_flat, levels=levels, cmap=cmap)
+    cf = ax.tricontourf(triang, val_closed, levels=levels, cmap=cmap)
     plt.colorbar(cf, ax=ax, label=title)
-    ax.tricontour(triang, val_flat, levels=levels, colors="k", linewidths=0.3, alpha=0.3)
+    ax.tricontour(triang, val_closed, levels=levels, colors="k", linewidths=0.3, alpha=0.3)
 
     # Draw cylinder
     cylinder = Circle((0, 0), r_cylinder, fill=True, color="gray", ec="black", lw=2)
