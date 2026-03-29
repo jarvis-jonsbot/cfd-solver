@@ -15,7 +15,7 @@ from src.flux import roe_flux_1d
 from src.gas import GAMMA, pressure, sound_speed
 from src.grid import Grid
 from src.numba_kernels import HAS_NUMBA, compute_dt_numba, compute_residual_numba
-from src.pressure import solve_pressure
+from src.pressure import solve_pressure  # signature updated: takes metric arrays, not dx/dy
 from src.reconstruction import muscl_reconstruct
 
 
@@ -242,80 +242,89 @@ def step_semi_implicit(Q, dt, grid: Grid, bcs=None):
     v = Q[2] / rho
     p = pressure(Q)
 
-    # Estimate uniform grid spacing from grid metrics
-    # Use average cell size as approximation (Phase 1 simplification)
-    dx_avg = float(xp.mean(1.0 / xp.sqrt(grid.xi_x_area**2 + grid.xi_y_area**2)))
-    dy_avg = float(xp.mean(1.0 / xp.sqrt(grid.eta_x_area**2 + grid.eta_y_area**2)))
+    # Local cell sizes in ξ and η from the metric magnitudes.
+    # |∇ξ| = sqrt(ξ_x² + ξ_y²) = 1/h_ξ  where h_ξ is the arc-length per unit index.
+    # Using local (cell-by-cell) values — not a global average — so that the
+    # upwind flux divergence is dimensionally consistent across the stretched grid.
+    h_xi  = 1.0 / (xp.sqrt(grid.xi_x**2  + grid.xi_y**2)  + EPS_TINY)   # shape (ni, nj)
+    h_eta = 1.0 / (xp.sqrt(grid.eta_x**2 + grid.eta_y**2) + EPS_TINY)
+
+    # Contravariant velocities U^ξ = u·ξ_x + v·ξ_y  and  U^η = u·η_x + v·η_y.
+    # These are the velocities "in the index directions" and are what the
+    # upwind stencil must use for stability on a non-Cartesian grid.
+    U_xi  = u * grid.xi_x  + v * grid.xi_y    # shape (ni, nj)
+    U_eta = u * grid.eta_x + v * grid.eta_y
 
     # --- Step 1: Explicit advective update for mass and momentum ---
-    # Simple first-order upwind for advective fluxes
-    # d(rho)/dt + d(rho*u)/dx + d(rho*v)/dy = 0
-    # d(rho*u)/dt + d(rho*u^2)/dx + d(rho*u*v)/dy = 0  (advective part only)
-    # d(rho*v)/dt + d(rho*u*v)/dx + d(rho*v^2)/dy = 0  (advective part only)
+    # Upwind in index space using contravariant velocities.
+    # The divergence dt * d(U^ξ · q) / dξ  for a scalar q is approximated as:
+    #   dt / h_ξ * [upwind_flux(i+1/2) - upwind_flux(i-1/2)]
+    # where h_ξ is the local arc-length scale (keeps units consistent).
+    #
+    # Note: this is still first-order and treats each coordinate direction
+    # independently (operator-split). Phase 2 will upgrade to full FV.
 
-    rho_new = rho.copy()
+    rho_new   = rho.copy()
     rho_u_new = Q[1].copy()
     rho_v_new = Q[2].copy()
 
-    # First-order upwind in x (periodic)
+    # ξ-direction sweep (periodic in i)
     for i in range(ni):
         i_m = (i - 1) % ni
         i_p = (i + 1) % ni
         for j in range(nj):
-            # Upwind for rho
-            flux_rho_x = u[i, j] * rho[i_m, j] if u[i, j] > 0 else u[i, j] * rho[i, j]
+            Uxi = float(U_xi[i, j])
+            hxi = float(h_xi[i, j])
 
-            flux_rho_x_p = u[i_p, j] * rho[i, j] if u[i_p, j] > 0 else u[i_p, j] * rho[i_p, j]
+            # Upwind flux at i-1/2  (use cell i if U>0, cell i-1 if U<0)
+            flux_rho   = Uxi * float(rho[i_m, j])   if Uxi > 0 else Uxi * float(rho[i, j])
+            flux_rho_p = float(U_xi[i_p, j]) * float(rho[i, j]) if float(U_xi[i_p, j]) > 0 \
+                         else float(U_xi[i_p, j]) * float(rho[i_p, j])
+            rho_new[i, j]   -= dt / hxi * (flux_rho_p - flux_rho)
 
-            rho_new[i, j] -= dt / dx_avg * (flux_rho_x_p - flux_rho_x)
+            flux_ru   = Uxi * float(Q[1, i_m, j]) if Uxi > 0 else Uxi * float(Q[1, i, j])
+            flux_ru_p = float(U_xi[i_p, j]) * float(Q[1, i, j]) if float(U_xi[i_p, j]) > 0 \
+                        else float(U_xi[i_p, j]) * float(Q[1, i_p, j])
+            rho_u_new[i, j] -= dt / hxi * (flux_ru_p - flux_ru)
 
-            # Upwind for rho*u (advective part: rho*u^2)
-            flux_u_x = u[i, j] * Q[1, i_m, j] if u[i, j] > 0 else u[i, j] * Q[1, i, j]
+            flux_rv   = Uxi * float(Q[2, i_m, j]) if Uxi > 0 else Uxi * float(Q[2, i, j])
+            flux_rv_p = float(U_xi[i_p, j]) * float(Q[2, i, j]) if float(U_xi[i_p, j]) > 0 \
+                        else float(U_xi[i_p, j]) * float(Q[2, i_p, j])
+            rho_v_new[i, j] -= dt / hxi * (flux_rv_p - flux_rv)
 
-            flux_u_x_p = u[i_p, j] * Q[1, i, j] if u[i_p, j] > 0 else u[i_p, j] * Q[1, i_p, j]
-
-            rho_u_new[i, j] -= dt / dx_avg * (flux_u_x_p - flux_u_x)
-
-            # Upwind for rho*v (advective part: rho*u*v)
-            flux_v_x = u[i, j] * Q[2, i_m, j] if u[i, j] > 0 else u[i, j] * Q[2, i, j]
-
-            flux_v_x_p = u[i_p, j] * Q[2, i, j] if u[i_p, j] > 0 else u[i_p, j] * Q[2, i_p, j]
-
-            rho_v_new[i, j] -= dt / dx_avg * (flux_v_x_p - flux_v_x)
-
-    # First-order upwind in y (periodic for now)
+    # η-direction sweep (clamped at boundaries)
     for i in range(ni):
         for j in range(nj):
-            j_m = max(0, j - 1)  # Clamp at boundaries
+            j_m = max(0, j - 1)
             j_p = min(nj - 1, j + 1)
+            Ueta = float(U_eta[i, j])
+            heta = float(h_eta[i, j])
 
-            # Upwind for rho
-            flux_rho_y = v[i, j] * rho[i, j_m] if v[i, j] > 0 else v[i, j] * rho[i, j]
+            flux_rho   = Ueta * float(rho[i, j_m]) if Ueta > 0 else Ueta * float(rho[i, j])
+            flux_rho_p = float(U_eta[i, j_p]) * float(rho[i, j]) if float(U_eta[i, j_p]) > 0 \
+                         else float(U_eta[i, j_p]) * float(rho[i, j_p])
+            rho_new[i, j]   -= dt / heta * (flux_rho_p - flux_rho)
 
-            flux_rho_y_p = v[i, j_p] * rho[i, j] if v[i, j_p] > 0 else v[i, j_p] * rho[i, j_p]
+            flux_ru   = Ueta * float(Q[1, i, j_m]) if Ueta > 0 else Ueta * float(Q[1, i, j])
+            flux_ru_p = float(U_eta[i, j_p]) * float(Q[1, i, j]) if float(U_eta[i, j_p]) > 0 \
+                        else float(U_eta[i, j_p]) * float(Q[1, i, j_p])
+            rho_u_new[i, j] -= dt / heta * (flux_ru_p - flux_ru)
 
-            rho_new[i, j] -= dt / dy_avg * (flux_rho_y_p - flux_rho_y)
-
-            # Upwind for rho*u (advective part: rho*u*v)
-            flux_u_y = v[i, j] * Q[1, i, j_m] if v[i, j] > 0 else v[i, j] * Q[1, i, j]
-
-            flux_u_y_p = v[i, j_p] * Q[1, i, j] if v[i, j_p] > 0 else v[i, j_p] * Q[1, i, j_p]
-
-            rho_u_new[i, j] -= dt / dy_avg * (flux_u_y_p - flux_u_y)
-
-            # Upwind for rho*v (advective part: rho*v^2)
-            flux_v_y = v[i, j] * Q[2, i, j_m] if v[i, j] > 0 else v[i, j] * Q[2, i, j]
-
-            flux_v_y_p = v[i, j_p] * Q[2, i, j] if v[i, j_p] > 0 else v[i, j_p] * Q[2, i, j_p]
-
-            rho_v_new[i, j] -= dt / dy_avg * (flux_v_y_p - flux_v_y)
+            flux_rv   = Ueta * float(Q[2, i, j_m]) if Ueta > 0 else Ueta * float(Q[2, i, j])
+            flux_rv_p = float(U_eta[i, j_p]) * float(Q[2, i, j]) if float(U_eta[i, j_p]) > 0 \
+                        else float(U_eta[i, j_p]) * float(Q[2, i, j_p])
+            rho_v_new[i, j] -= dt / heta * (flux_rv_p - flux_rv)
 
     # --- Step 2: Compute c^2 for pressure solve ---
     c2 = GAMMA * p / xp.maximum(rho, EPS_TINY)
 
     # --- Step 3: Solve implicit pressure equation ---
+    # Pass curvilinear metric arrays (not averaged dx/dy) so the elliptic
+    # operator uses the same coordinate representation as the gradient correction.
     p_new = solve_pressure(
-        rho_new, rho_u_new, rho_v_new, c2, dx_avg, dy_avg, dt, p_wall_neumann=True, xp=xp
+        rho_new, rho_u_new, rho_v_new, c2,
+        grid.xi_x, grid.xi_y, grid.eta_x, grid.eta_y,
+        dt, p_wall_neumann=True, xp=xp
     )
 
     # --- Step 4: Apply pressure gradient correction to momentum ---
