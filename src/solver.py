@@ -321,17 +321,33 @@ def step_semi_implicit(Q, dt, grid: Grid, bcs=None):
     # --- Step 4: Apply pressure gradient correction to momentum ---
     # d(rho*u)/dt = -dp/dx * dt  (implicit pressure gradient)
     # d(rho*v)/dt = -dp/dy * dt
+    #
+    # IMPORTANT: i is the circumferential (ξ) index, j is the radial (η) index.
+    # On an O-grid these are NOT aligned with x/y — we must use the chain rule:
+    #
+    #   ∂p/∂x = ∂p/∂ξ · ξ_x + ∂p/∂η · η_x
+    #   ∂p/∂y = ∂p/∂ξ · ξ_y + ∂p/∂η · η_y
+    #
+    # Using index-space differences (dimensionless Δξ = Δη = 1) and the
+    # contravariant metrics already stored on the Grid object.
+    # Without this transform, pressure gradients are rotated by the local
+    # grid angle — producing the SW/NE pressure inversion artifact.
     for i in range(ni):
         i_p = (i + 1) % ni
         i_m = (i - 1) % ni
         for j in range(nj):
-            # Central difference for pressure gradient
-            dp_dx = (p_new[i_p, j] - p_new[i_m, j]) / (2.0 * dx_avg)
-            rho_u_new[i, j] -= dt * dp_dx
-
             j_p = min(nj - 1, j + 1)
             j_m = max(0, j - 1)
-            dp_dy = (p_new[i, j_p] - p_new[i, j_m]) / (2.0 * dy_avg)
+
+            # Central differences in index space (Δξ = Δη = 1 by convention)
+            dp_dxi  = (p_new[i_p, j] - p_new[i_m, j]) / 2.0
+            dp_deta = (p_new[i, j_p] - p_new[i, j_m]) / 2.0
+
+            # Chain rule: project onto physical (x, y) directions
+            dp_dx = dp_dxi * grid.xi_x[i, j] + dp_deta * grid.eta_x[i, j]
+            dp_dy = dp_dxi * grid.xi_y[i, j] + dp_deta * grid.eta_y[i, j]
+
+            rho_u_new[i, j] -= dt * dp_dx
             rho_v_new[i, j] -= dt * dp_dy
 
     # --- Step 5: Recompute energy from updated pressure and velocities ---
