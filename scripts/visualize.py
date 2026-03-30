@@ -51,12 +51,14 @@ def _build_triangulation(x: np.ndarray, y: np.ndarray) -> tuple[mtri.Triangulati
     ni, nj = x.shape
 
     # Close the grid: append column i=0 as a phantom column i=ni
+    # fmt: off
     xc = np.concatenate([x, x[:1, :]], axis=0)   # (ni+1, nj)
     yc = np.concatenate([y, y[:1, :]], axis=0)
 
     # Index map: phantom node (i, j) → original node (i % ni, j)
-    orig_i = np.arange(ni + 1) % ni              # (ni+1,)
+    orig_i  = np.arange(ni + 1) % ni              # (ni+1,)
     idx_map = (orig_i[:, None] * nj + np.arange(nj)[None, :]).ravel()  # (ni+1)*nj
+    # fmt: on
 
     x_flat = xc.ravel()
     y_flat = yc.ravel()
