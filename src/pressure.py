@@ -34,9 +34,20 @@ import scipy.sparse.linalg as spla
 from src.backend import EPS_TINY, to_numpy
 
 
-def solve_pressure(rho, rho_u, rho_v, c2,
-                   xi_x_area, xi_y_area, eta_x_area, eta_y_area, jacobian,
-                   dt, p_wall_neumann=True, xp=None):
+def solve_pressure(
+    rho,
+    rho_u,
+    rho_v,
+    c2,
+    xi_x_area,
+    xi_y_area,
+    eta_x_area,
+    eta_y_area,
+    jacobian,
+    dt,
+    p_wall_neumann=True,
+    xp=None,
+):
     """Solve implicit pressure equation using preconditioned conjugate gradient.
 
     Assembles the sparse matrix for:
@@ -59,25 +70,26 @@ def solve_pressure(rho, rho_u, rho_v, c2,
     Returns:
         p_new: updated pressure field, shape (ni, nj)
     """
-    rho_np    = to_numpy(rho)
-    c2_np     = to_numpy(c2)
-    xi_xa_np  = to_numpy(xi_x_area)
-    xi_ya_np  = to_numpy(xi_y_area)
+    rho_np = to_numpy(rho)
+    c2_np = to_numpy(c2)
+    xi_xa_np = to_numpy(xi_x_area)
+    xi_ya_np = to_numpy(xi_y_area)
     eta_xa_np = to_numpy(eta_x_area)
     eta_ya_np = to_numpy(eta_y_area)
-    jac_np    = to_numpy(jacobian)
+    jac_np = to_numpy(jacobian)
 
-    ni, nj  = rho_np.shape
+    ni, nj = rho_np.shape
     n_cells = ni * nj
-    J_abs   = np.abs(jac_np) + EPS_TINY  # cell volume (area per unit depth)
+    J_abs = np.abs(jac_np) + EPS_TINY  # cell volume (area per unit depth)
 
     # Face area magnitudes: |n_ξ| = dr, |n_η| = r·dθ
-    nxi_sq  = xi_xa_np**2  + xi_ya_np**2    # shape (ni, nj)
+    nxi_sq = xi_xa_np**2 + xi_ya_np**2  # shape (ni, nj)
     neta_sq = eta_xa_np**2 + eta_ya_np**2
 
     from src.gas import GAMMA
+
     p_guess = rho_np * c2_np / GAMMA
-    p_flat  = p_guess.ravel()
+    p_flat = p_guess.ravel()
 
     data, rows, cols = [], [], []
 
@@ -88,10 +100,10 @@ def solve_pressure(rho, rho_u, rho_v, c2,
         i_p = (i + 1) % ni
         i_m = (i - 1) % ni
         for j in range(nj):
-            k    = i * nj + j
+            k = i * nj + j
             diag = 1.0
-            Jk   = J_abs[i, j]
-            coef = c2_np[i, j] * dt * dt / Jk   # ρc²dt²/J; ρ cancels with 1/ρ harmonic mean
+            Jk = J_abs[i, j]
+            coef = c2_np[i, j] * dt * dt / Jk  # ρc²dt²/J; ρ cancels with 1/ρ harmonic mean
 
             # ξ-direction: face i+1/2 uses average face area and harmonic mean density
             # fmt: off
@@ -159,6 +171,7 @@ def solve_pressure(rho, rho_u, rho_v, c2,
 
     if info != 0:
         import warnings
+
         warnings.warn(f"Pressure solve CG did not converge: info={info}", stacklevel=2)
 
     p_new = p_new_flat.reshape((ni, nj))

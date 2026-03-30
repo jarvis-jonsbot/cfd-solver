@@ -242,7 +242,7 @@ def step_semi_implicit(Q, dt, grid: Grid, bcs=None):
     v = Q[2] / rho
     p = pressure(Q)
 
-    J_abs = xp.abs(grid.jacobian) + EPS_TINY   # cell volume (area per unit depth)
+    J_abs = xp.abs(grid.jacobian) + EPS_TINY  # cell volume (area per unit depth)
 
     # Area-weighted contravariant volume fluxes (physical velocity · face area).
     # U_xi_area  = u·ξ_x_area + v·ξ_y_area  ≡  (physical flux through ξ-face) * sign
@@ -261,7 +261,7 @@ def step_semi_implicit(Q, dt, grid: Grid, bcs=None):
     # This is the correct FV form on a curvilinear grid; no dx/h factors needed
     # because the area normals are already metric-weighted.
 
-    rho_new   = rho.copy()
+    rho_new = rho.copy()
     rho_u_new = Q[1].copy()
     rho_v_new = Q[2].copy()
 
@@ -321,9 +321,18 @@ def step_semi_implicit(Q, dt, grid: Grid, bcs=None):
     # uses the same metric quantities as the gradient correction and
     # advective update, ensuring full coordinate consistency.
     p_new = solve_pressure(
-        rho_new, rho_u_new, rho_v_new, c2,
-        grid.xi_x_area, grid.xi_y_area, grid.eta_x_area, grid.eta_y_area,
-        grid.jacobian, dt, p_wall_neumann=True, xp=xp
+        rho_new,
+        rho_u_new,
+        rho_v_new,
+        c2,
+        grid.xi_x_area,
+        grid.xi_y_area,
+        grid.eta_x_area,
+        grid.eta_y_area,
+        grid.jacobian,
+        dt,
+        p_wall_neumann=True,
+        xp=xp,
     )
 
     # --- Step 4: Apply pressure gradient correction to momentum ---
@@ -348,7 +357,7 @@ def step_semi_implicit(Q, dt, grid: Grid, bcs=None):
             j_m = max(0, j - 1)
 
             # Central differences in index space (Δξ = Δη = 1 by convention)
-            dp_dxi  = (p_new[i_p, j] - p_new[i_m, j]) / 2.0
+            dp_dxi = (p_new[i_p, j] - p_new[i_m, j]) / 2.0
             dp_deta = (p_new[i, j_p] - p_new[i, j_m]) / 2.0
 
             # Chain rule: project onto physical (x, y) directions.

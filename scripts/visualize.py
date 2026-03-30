@@ -64,12 +64,12 @@ def _build_triangulation(x: np.ndarray, y: np.ndarray) -> tuple[mtri.Triangulati
     y_flat = yc.ravel()
 
     triangles = []
-    for i in range(ni):           # ni quads; the last one bridges the seam
+    for i in range(ni):  # ni quads; the last one bridges the seam
         for j in range(nj - 1):
-            n00 = i       * nj + j
-            n10 = (i + 1) * nj + j       # phantom column when i == ni-1
+            n00 = i * nj + j
+            n10 = (i + 1) * nj + j  # phantom column when i == ni-1
             n11 = (i + 1) * nj + j + 1
-            n01 = i       * nj + j + 1
+            n01 = i * nj + j + 1
             triangles.append((n00, n10, n11))
             triangles.append((n00, n11, n01))
 
