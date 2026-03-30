@@ -16,6 +16,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import matplotlib.pyplot as plt
+import matplotlib.tri as mtri
 import numpy as np
 from matplotlib.animation import FuncAnimation, PillowWriter
 from matplotlib.patches import Circle
@@ -40,6 +41,43 @@ def _compute_field(Q, name: str):
     return fields[name]
 
 
+def _build_triangulation(x: np.ndarray, y: np.ndarray):
+    """Build a phantom-closed Triangulation for the O-grid periodic seam.
+
+    Appends column i=0 as phantom column i=ni so that the seam quad
+    (i=ni-1 → i=ni) has finite extent in (x,y) and tricontourf renders
+    it without a gap. Returns (triang, idx_map) where idx_map remaps
+    phantom-grid flat indices → original (ni*nj) flat indices.
+    """
+    ni, nj = x.shape
+    xc = np.concatenate([x, x[:1, :]], axis=0)  # (ni+1, nj)
+    yc = np.concatenate([y, y[:1, :]], axis=0)
+
+    orig_i = np.arange(ni + 1) % ni
+    idx_map = (orig_i[:, None] * nj + np.arange(nj)[None, :]).ravel()
+
+    triangles = []
+    for i in range(ni):
+        for j in range(nj - 1):
+            n00 = i * nj + j
+            n10 = (i + 1) * nj + j
+            n11 = (i + 1) * nj + j + 1
+            n01 = i * nj + j + 1
+            triangles.append((n00, n10, n11))
+            triangles.append((n00, n11, n01))
+
+    triangles = np.array(triangles, dtype=np.int32)
+    triang = mtri.Triangulation(xc.ravel(), yc.ravel(), triangles)
+
+    # Mask triangles inside the cylinder body
+    r_cyl = 0.5
+    xm = xc.ravel()[triangles].mean(axis=1)
+    ym = yc.ravel()[triangles].mean(axis=1)
+    triang.set_mask(xm**2 + ym**2 < r_cyl**2)
+
+    return triang, idx_map
+
+
 def animate(
     input_dir: str,
     field: str = "pressure",
@@ -49,23 +87,29 @@ def animate(
     ylim: tuple[float, float] = (-3, 3),
 ):
     """Create animation from solution snapshots."""
-    # Find and sort snapshot files (exclude final)
     pattern = os.path.join(input_dir, "solution_*.npz")
     files = sorted(glob.glob(pattern))
     if not files:
         print(f"No solution files found in {input_dir}")
         return
 
-    # Load first frame to set up plot
+    # Load first frame to set up triangulation (grid doesn't change between frames)
     data0 = np.load(files[0])
     x, y = data0["x"], data0["y"]
     val0, title, cmap = _compute_field(data0["Q"], field)
 
-    fig, ax = plt.subplots(1, 1, figsize=(10, 8))
-    levels = np.linspace(np.nanpercentile(val0, 2), np.nanpercentile(val0, 98), 40)
+    # Build triangulation once — shared across all frames
+    triang, idx_map = _build_triangulation(x, y)
 
-    # Initial contour
-    cf = ax.contourf(x, y, val0, levels=levels, cmap=cmap, extend="both")
+    # Compute colour levels from first frame percentiles
+    val0_flat = val0.ravel()[idx_map]
+    levels = np.linspace(np.nanpercentile(val0_flat, 2), np.nanpercentile(val0_flat, 98), 40)
+
+    fig, ax = plt.subplots(1, 1, figsize=(10, 8))
+
+    # Draw initial frame
+    val_closed = val0.ravel()[idx_map]
+    cf = ax.tricontourf(triang, val_closed, levels=levels, cmap=cmap, extend="both")
     plt.colorbar(cf, ax=ax, label=title)
     cylinder = Circle((0, 0), 0.5, fill=True, color="gray", ec="black", lw=2, zorder=10)
     ax.add_patch(cylinder)
@@ -82,8 +126,10 @@ def animate(
         val, _, _ = _compute_field(data["Q"], field)
         t = float(data["t"][0])
 
-        ax.contourf(x, y, val, levels=levels, cmap=cmap, extend="both")
-        ax.contour(x, y, val, levels=levels, colors="k", linewidths=0.3, alpha=0.3)
+        val_closed = val.ravel()[idx_map]
+        ax.tricontourf(triang, val_closed, levels=levels, cmap=cmap, extend="both")
+        ax.tricontour(triang, val_closed, levels=levels, colors="k", linewidths=0.3, alpha=0.3)
+
         cyl = Circle((0, 0), 0.5, fill=True, color="gray", ec="black", lw=2, zorder=10)
         ax.add_patch(cyl)
         ax.set_xlim(*xlim)
