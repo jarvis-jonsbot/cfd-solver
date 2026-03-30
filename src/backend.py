@@ -45,7 +45,7 @@ class _MLXShim:
 
 def _load_mlx() -> _MLXShim:
     """Load MLX and configure for GPU compute."""
-    import mlx.core as mx
+    import mlx.core as mx  # type: ignore[import-not-found]
 
     return _MLXShim(mx)
 
