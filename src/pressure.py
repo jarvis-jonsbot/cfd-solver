@@ -178,3 +178,4 @@ def solve_pressure(
     if xp is not None:
         p_new = xp.array(p_new)
     return p_new
+
