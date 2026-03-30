@@ -94,18 +94,22 @@ def solve_pressure(rho, rho_u, rho_v, c2,
             coef = c2_np[i, j] * dt * dt / Jk   # ρc²dt²/J; ρ cancels with 1/ρ harmonic mean
 
             # ξ-direction: face i+1/2 uses average face area and harmonic mean density
+            # fmt: off
             nxi_p  = 0.5 * (nxi_sq[i, j]   + nxi_sq[i_p, j])
             rho_hp = 2.0 / (rho_np[i, j] + rho_np[i_p, j] + EPS_TINY)
             a_p    = coef * rho_np[i, j] * rho_hp * nxi_p
+            # fmt: on
 
             rows.append(k)
             cols.append(idx(i_p, j))
             data.append(-a_p)
             diag += a_p
 
+            # fmt: off
             nxi_m  = 0.5 * (nxi_sq[i, j]   + nxi_sq[i_m, j])
             rho_hm = 2.0 / (rho_np[i, j] + rho_np[i_m, j] + EPS_TINY)
             a_m    = coef * rho_np[i, j] * rho_hm * nxi_m
+            # fmt: on
 
             rows.append(k)
             cols.append(idx(i_m, j))
@@ -114,9 +118,11 @@ def solve_pressure(rho, rho_u, rho_v, c2,
 
             # η-direction
             if j < nj - 1:
+                # fmt: off
                 neta_p = 0.5 * (neta_sq[i, j] + neta_sq[i, j + 1])
                 rho_hp = 2.0 / (rho_np[i, j] + rho_np[i, j + 1] + EPS_TINY)
                 b_p    = coef * rho_np[i, j] * rho_hp * neta_p
+                # fmt: on
 
                 rows.append(k)
                 cols.append(idx(i, j + 1))
@@ -124,9 +130,11 @@ def solve_pressure(rho, rho_u, rho_v, c2,
                 diag += b_p
 
             if j > 0:
+                # fmt: off
                 neta_m = 0.5 * (neta_sq[i, j] + neta_sq[i, j - 1])
                 rho_hm = 2.0 / (rho_np[i, j] + rho_np[i, j - 1] + EPS_TINY)
                 b_m    = coef * rho_np[i, j] * rho_hm * neta_m
+                # fmt: on
 
                 rows.append(k)
                 cols.append(idx(i, j - 1))
