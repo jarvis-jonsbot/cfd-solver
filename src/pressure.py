@@ -6,74 +6,75 @@ implicit treatment of acoustic waves in curvilinear coordinates:
     (I - dt² · ρc² · ∇·(1/ρ ∇)) p^{n+1} = p^*
 
 The Laplacian is expressed in index (ξ, η) coordinates using the
-local metric magnitudes |∇ξ|² = ξ_x² + ξ_y² and |∇η|² = η_x² + η_y²
-so that the pressure operator is consistent with the curvilinear
-gradient used in the momentum correction step.
+area-weighted face normals already stored on the Grid:
 
-Uses finite differences on the curvilinear grid (Phase 1: diagonal metric
-terms only, off-diagonal ξ·η cross-terms deferred to Phase 2).
+    ξ-face normal magnitude  |n_ξ|  = sqrt(ξ_x_area² + ξ_y_area²)  = dr  (radial spacing)
+    η-face normal magnitude  |n_η|  = sqrt(η_x_area² + η_y_area²)  = r·dθ (arc spacing)
+
+These are the *physical* face areas per unit depth. The finite-difference
+coefficient for the ξ-direction Laplacian term is:
+
+    a_{i±1/2} = ρc²·dt² · (1/ρ)_{i±1/2} · |n_ξ|²_{i±1/2} / |J|
+
+which after dividing by |J| (cell volume) gives units of 1/time², consistent
+with the identity term. Using area-weighted normals (not divided by J) ensures
+the stencil coefficients are O(1) across the grid, keeping the matrix
+well-conditioned for CG.
+
+A Jacobi (diagonal) preconditioner is applied to handle the residual
+variation across the stretched grid.
 """
 
 from __future__ import annotations
 
+import numpy as np
 import scipy.sparse as sp
 import scipy.sparse.linalg as spla
 
 from src.backend import EPS_TINY, to_numpy
 
 
-def solve_pressure(rho, rho_u, rho_v, c2, xi_x, xi_y, eta_x, eta_y,
+def solve_pressure(rho, rho_u, rho_v, c2,
+                   xi_x_area, xi_y_area, eta_x_area, eta_y_area, jacobian,
                    dt, p_wall_neumann=True, xp=None):
-    """Solve implicit pressure equation using conjugate gradient.
+    """Solve implicit pressure equation using preconditioned conjugate gradient.
 
     Assembles the sparse matrix for:
-        (I - dt² · ρc² · ∇·(1/ρ ∇)) p^{n+1} = p^*
+        A p^{n+1} = p^*
 
-    The spatial operator is discretised in index (ξ, η) coordinates
-    using local metric magnitudes:
-        - ξ-direction: 1/dξ² → |∇ξ|²_i  (= ξ_x² + ξ_y²  at cell i,j)
-        - η-direction: 1/dη² → |∇η|²_i
-
-    This ensures the pressure Laplacian and the momentum-correction
-    gradient (which uses the same contravariant metrics) are discretised
-    identically — preventing the coordinate mismatch that caused the
-    pressure fluctuations when a uniform dx_avg was used here while
-    exact chain-rule differences were used in the momentum step.
+    where A = I + L, with L the variable-coefficient curvilinear Laplacian
+    discretised using area-weighted face normals divided by the cell Jacobian.
 
     Args:
         rho: density field, shape (ni, nj)
-        rho_u: x-momentum field, shape (ni, nj)
-        rho_v: y-momentum field, shape (ni, nj)
+        rho_u, rho_v: momentum fields, shape (ni, nj)
         c2: sound speed squared (gamma * p / rho), shape (ni, nj)
-        xi_x:  ∂ξ/∂x contravariant metric, shape (ni, nj)
-        xi_y:  ∂ξ/∂y contravariant metric, shape (ni, nj)
-        eta_x: ∂η/∂x contravariant metric, shape (ni, nj)
-        eta_y: ∂η/∂y contravariant metric, shape (ni, nj)
+        xi_x_area, xi_y_area:   ξ-face area-weighted normals, shape (ni, nj)
+        eta_x_area, eta_y_area: η-face area-weighted normals, shape (ni, nj)
+        jacobian: cell Jacobian (signed area element), shape (ni, nj)
         dt: time step
-        p_wall_neumann: apply Neumann BC (dp/dn=0) at j=0 wall
-        xp: array module (for converting back to backend arrays)
+        p_wall_neumann: apply dp/dn=0 at j=0
+        xp: array module for output conversion
 
     Returns:
         p_new: updated pressure field, shape (ni, nj)
     """
-    # Convert to NumPy for scipy sparse solver
-    rho_np  = to_numpy(rho)
-    c2_np   = to_numpy(c2)
-    xi_x_np  = to_numpy(xi_x)
-    xi_y_np  = to_numpy(xi_y)
-    eta_x_np = to_numpy(eta_x)
-    eta_y_np = to_numpy(eta_y)
+    rho_np    = to_numpy(rho)
+    c2_np     = to_numpy(c2)
+    xi_xa_np  = to_numpy(xi_x_area)
+    xi_ya_np  = to_numpy(xi_y_area)
+    eta_xa_np = to_numpy(eta_x_area)
+    eta_ya_np = to_numpy(eta_y_area)
+    jac_np    = to_numpy(jacobian)
 
-    ni, nj = rho_np.shape
+    ni, nj  = rho_np.shape
     n_cells = ni * nj
+    J_abs   = np.abs(jac_np) + EPS_TINY  # cell volume (area per unit depth)
 
-    # Metric magnitudes squared: |∇ξ|² and |∇η|²
-    # These replace 1/dx² and 1/dy² in the stencil, giving a
-    # curvilinear-consistent discrete Laplacian.
-    grad_xi_sq  = xi_x_np**2  + xi_y_np**2    # shape (ni, nj)
-    grad_eta_sq = eta_x_np**2 + eta_y_np**2
+    # Face area magnitudes: |n_ξ| = dr, |n_η| = r·dθ
+    nxi_sq  = xi_xa_np**2  + xi_ya_np**2    # shape (ni, nj)
+    neta_sq = eta_xa_np**2 + eta_ya_np**2
 
-    # Initial pressure guess: p ~ rho * c^2 / gamma
     from src.gas import GAMMA
     p_guess = rho_np * c2_np / GAMMA
     p_flat  = p_guess.ravel()
@@ -81,59 +82,62 @@ def solve_pressure(rho, rho_u, rho_v, c2, xi_x, xi_y, eta_x, eta_y,
     data, rows, cols = [], [], []
 
     def idx(i, j):
-        i = i % ni
-        j = max(0, min(j, nj - 1))
-        return i * nj + j
+        return (i % ni) * nj + max(0, min(j, nj - 1))
 
     for i in range(ni):
+        i_p = (i + 1) % ni
+        i_m = (i - 1) % ni
         for j in range(nj):
-            k    = idx(i, j)
+            k    = i * nj + j
             diag = 1.0
-            coef = rho_np[i, j] * c2_np[i, j] * dt * dt
+            Jk   = J_abs[i, j]
+            coef = c2_np[i, j] * dt * dt / Jk   # ρc²dt²/J; ρ cancels with 1/ρ harmonic mean
 
-            # --- ξ-direction (periodic in i) ---
-            i_p = (i + 1) % ni
-            i_m = (i - 1) % ni
-
-            # Metric magnitude at i+1/2 interface (average of neighbours)
-            gxi_p = 0.5 * (grad_xi_sq[i, j] + grad_xi_sq[i_p, j])
-            rho_h_p = 2.0 / (rho_np[i, j] + rho_np[i_p, j] + EPS_TINY)
-            a_p = coef * rho_h_p * gxi_p
+            # ξ-direction: face i+1/2 uses average face area and harmonic mean density
+            nxi_p  = 0.5 * (nxi_sq[i, j]   + nxi_sq[i_p, j])
+            rho_hp = 2.0 / (rho_np[i, j] + rho_np[i_p, j] + EPS_TINY)
+            a_p    = coef * rho_np[i, j] * rho_hp * nxi_p
 
             rows.append(k); cols.append(idx(i_p, j)); data.append(-a_p)
             diag += a_p
 
-            gxi_m = 0.5 * (grad_xi_sq[i, j] + grad_xi_sq[i_m, j])
-            rho_h_m = 2.0 / (rho_np[i, j] + rho_np[i_m, j] + EPS_TINY)
-            a_m = coef * rho_h_m * gxi_m
+            nxi_m  = 0.5 * (nxi_sq[i, j]   + nxi_sq[i_m, j])
+            rho_hm = 2.0 / (rho_np[i, j] + rho_np[i_m, j] + EPS_TINY)
+            a_m    = coef * rho_np[i, j] * rho_hm * nxi_m
 
             rows.append(k); cols.append(idx(i_m, j)); data.append(-a_m)
             diag += a_m
 
-            # --- η-direction ---
+            # η-direction
             if j < nj - 1:
-                geta_p = 0.5 * (grad_eta_sq[i, j] + grad_eta_sq[i, j + 1])
-                rho_h_p = 2.0 / (rho_np[i, j] + rho_np[i, j + 1] + EPS_TINY)
-                b_p = coef * rho_h_p * geta_p
+                neta_p = 0.5 * (neta_sq[i, j] + neta_sq[i, j + 1])
+                rho_hp = 2.0 / (rho_np[i, j] + rho_np[i, j + 1] + EPS_TINY)
+                b_p    = coef * rho_np[i, j] * rho_hp * neta_p
 
                 rows.append(k); cols.append(idx(i, j + 1)); data.append(-b_p)
                 diag += b_p
 
             if j > 0:
-                geta_m = 0.5 * (grad_eta_sq[i, j] + grad_eta_sq[i, j - 1])
-                rho_h_m = 2.0 / (rho_np[i, j] + rho_np[i, j - 1] + EPS_TINY)
-                b_m = coef * rho_h_m * geta_m
+                neta_m = 0.5 * (neta_sq[i, j] + neta_sq[i, j - 1])
+                rho_hm = 2.0 / (rho_np[i, j] + rho_np[i, j - 1] + EPS_TINY)
+                b_m    = coef * rho_np[i, j] * rho_hm * neta_m
 
                 rows.append(k); cols.append(idx(i, j - 1)); data.append(-b_m)
                 diag += b_m
-            # j=0: Neumann — no j-1 term added (dp/dη = 0 at wall)
+            # j=0 Neumann: no j-1 term (dp/dn = 0 enforced by omission)
 
             rows.append(k); cols.append(k); data.append(diag)
 
     A = sp.coo_matrix((data, (rows, cols)), shape=(n_cells, n_cells)).tocsr()
     rhs = p_flat.copy()
 
-    p_new_flat, info = spla.cg(A, rhs, x0=p_flat, rtol=1e-6, maxiter=1000)
+    # Jacobi preconditioner: M^{-1} = diag(A)^{-1}
+    # Critical for convergence on stretched grids where diagonal varies by ~100x
+    diag_A = np.array(A.diagonal())
+    diag_A[diag_A == 0] = 1.0
+    M = sp.diags(1.0 / diag_A)
+
+    p_new_flat, info = spla.cg(A, rhs, x0=p_flat, M=M, rtol=1e-6, maxiter=2000)
 
     if info != 0:
         import warnings
