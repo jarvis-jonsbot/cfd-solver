@@ -249,8 +249,10 @@ def step_semi_implicit(Q, dt, grid: Grid, bcs=None):
     # These are exactly what compute_dt_advective uses, so CFL is consistent.
     # Dividing by J gives the volume-specific rate; the divergence then is
     #   (1/J) · (F_{i+1/2} - F_{i-1/2})  with F = U_xi_area · q
+    # fmt: off
     U_xi_area  = u * grid.xi_x_area  + v * grid.xi_y_area    # shape (ni, nj)
     U_eta_area = u * grid.eta_x_area + v * grid.eta_y_area
+    # fmt: on
 
     # --- Step 1: Explicit advective update for mass and momentum ---
     # Finite-volume upwind divergence in curvilinear coordinates:
@@ -269,6 +271,7 @@ def step_semi_implicit(Q, dt, grid: Grid, bcs=None):
         i_p = (i + 1) % ni
         for j in range(nj):
             # Face velocity at i+1/2: average of neighbours (first-order)
+            # fmt: off
             Uxi_p = 0.5 * (float(U_xi_area[i, j]) + float(U_xi_area[i_p, j]))
             Uxi_m = 0.5 * (float(U_xi_area[i_m, j]) + float(U_xi_area[i, j]))
             Jk    = float(J_abs[i, j])
@@ -285,12 +288,14 @@ def step_semi_implicit(Q, dt, grid: Grid, bcs=None):
             Frv_p = Uxi_p * float(Q[2, i, j])   if Uxi_p > 0 else Uxi_p * float(Q[2, i_p, j])
             Frv_m = Uxi_m * float(Q[2, i_m, j]) if Uxi_m > 0 else Uxi_m * float(Q[2, i, j])
             rho_v_new[i, j] -= dt / Jk * (Frv_p - Frv_m)
+            # fmt: on
 
     # η-direction sweep (clamped at boundaries)
     for i in range(ni):
         for j in range(nj):
             j_m = max(0, j - 1)
             j_p = min(nj - 1, j + 1)
+            # fmt: off
             Ueta_p = 0.5 * (float(U_eta_area[i, j]) + float(U_eta_area[i, j_p]))
             Ueta_m = 0.5 * (float(U_eta_area[i, j_m]) + float(U_eta_area[i, j]))
             Jk     = float(J_abs[i, j])
@@ -306,6 +311,7 @@ def step_semi_implicit(Q, dt, grid: Grid, bcs=None):
             Frv_p = Ueta_p * float(Q[2, i, j])   if Ueta_p > 0 else Ueta_p * float(Q[2, i, j_p])
             Frv_m = Ueta_m * float(Q[2, i, j_m]) if Ueta_m > 0 else Ueta_m * float(Q[2, i, j])
             rho_v_new[i, j] -= dt / Jk * (Frv_p - Frv_m)
+            # fmt: on
 
     # --- Step 2: Compute c^2 for pressure solve ---
     c2 = GAMMA * p / xp.maximum(rho, EPS_TINY)
@@ -349,13 +355,15 @@ def step_semi_implicit(Q, dt, grid: Grid, bcs=None):
             # ξ_x = ξ_x_area / |J|  (contravariant = area-normal / cell-volume)
             # Using area normals + Jacobian avoids requiring xi_x/eta_x
             # attributes on the Grid (which may not be set in test fixtures).
-            Jk = float(J_abs[i, j])
-            xi_x_ij  =  float(grid.xi_x_area[i, j])  / Jk
-            xi_y_ij  =  float(grid.xi_y_area[i, j])  / Jk
-            eta_x_ij =  float(grid.eta_x_area[i, j]) / Jk
-            eta_y_ij =  float(grid.eta_y_area[i, j]) / Jk
-            dp_dx = dp_dxi * xi_x_ij  + dp_deta * eta_x_ij
-            dp_dy = dp_dxi * xi_y_ij  + dp_deta * eta_y_ij
+            # fmt: off
+            Jk       = float(J_abs[i, j])
+            xi_x_ij  = float(grid.xi_x_area[i, j])  / Jk
+            xi_y_ij  = float(grid.xi_y_area[i, j])  / Jk
+            eta_x_ij = float(grid.eta_x_area[i, j]) / Jk
+            eta_y_ij = float(grid.eta_y_area[i, j]) / Jk
+            dp_dx    = dp_dxi * xi_x_ij  + dp_deta * eta_x_ij
+            dp_dy    = dp_dxi * xi_y_ij  + dp_deta * eta_y_ij
+            # fmt: on
 
             rho_u_new[i, j] -= dt * dp_dx
             rho_v_new[i, j] -= dt * dp_dy
