@@ -28,8 +28,8 @@ variation across the stretched grid.
 from __future__ import annotations
 
 import numpy as np
-import scipy.sparse as sp
-import scipy.sparse.linalg as spla
+import scipy.sparse as sp  # type: ignore[import-untyped]
+import scipy.sparse.linalg as spla  # type: ignore[import-untyped]
 
 from src.backend import EPS_TINY, to_numpy
 

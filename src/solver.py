@@ -47,16 +47,18 @@ def compute_dt(Q, grid: Grid, cfl: float) -> float:
         import numpy as np
 
         Qnp = np.asarray(Q)
-        return compute_dt_numba(
-            Qnp,
-            np.asarray(grid.xi_x_area),
-            np.asarray(grid.xi_y_area),
-            np.asarray(grid.eta_x_area),
-            np.asarray(grid.eta_y_area),
-            np.asarray(grid.jacobian),
-            grid.ni,
-            grid.nj,
-            cfl,
+        return float(
+            compute_dt_numba(
+                Qnp,
+                np.asarray(grid.xi_x_area),
+                np.asarray(grid.xi_y_area),
+                np.asarray(grid.eta_x_area),
+                np.asarray(grid.eta_y_area),
+                np.asarray(grid.jacobian),
+                grid.ni,
+                grid.nj,
+                cfl,
+            )
         )
     rho = Q[0]
     u = Q[1] / rho

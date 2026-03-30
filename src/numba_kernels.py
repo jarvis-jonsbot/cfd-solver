@@ -17,7 +17,7 @@ import math
 import numpy as np
 
 try:
-    from numba import njit, prange
+    from numba import njit, prange  # type: ignore[import-not-found]
 
     HAS_NUMBA = True
 except ImportError:

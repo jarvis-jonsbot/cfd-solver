@@ -38,5 +38,15 @@ module = ["src.grid", "src.solver", "src.flux", "src.boundary", "src.reconstruct
 # Dynamic array backend (numpy/cupy) produces unresolvable types
 disable_error_code = ["index", "operator", "unused-ignore"]
 
+[[tool.mypy.overrides]]
+# Optional GPU/accelerator backends — not installed in CI
+module = ["numba", "numba.*", "mlx", "mlx.*", "cupy", "cupy.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# scipy ships no py.typed marker; stubs are a separate install
+module = ["scipy", "scipy.*"]
+ignore_missing_imports = true
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
