@@ -103,6 +103,34 @@ make lint-fix      # auto-fix lint issues + format
 make typecheck     # mypy strict mode
 ```
 
+## ⚠️ Definition of Done — Required Before Every Commit
+
+**All three of these must pass before you consider any task complete:**
+
+```bash
+make lint          # must exit 0 — no ruff errors, no formatting issues
+make test          # must exit 0 — all tests passing
+make typecheck     # must exit 0 — no mypy errors
+```
+
+If `make lint` fails:
+
+1. Run `make lint-fix` to auto-fix what ruff can fix automatically
+2. Manually fix any remaining issues (E501 line-too-long, SIM/B rules that need manual rewrites)
+3. Re-run `make lint` until it passes
+4. Then run `make test` to confirm nothing broke
+
+**Never commit code that fails `make lint`.** CI will block the PR and it wastes review cycles.
+
+Common lint mistakes to avoid proactively:
+
+- Remove unused imports immediately (F401)
+- Remove unused local variables (F841) — use `_name` convention if a variable must exist but is unused
+- Keep lines ≤ 100 characters (E501) — break long `parser.add_argument(...)` calls across lines
+- Use ternary operator for simple if/else (SIM108): `x = a if cond else b`
+- Don't use bare `except:` (E722) — always specify exception type
+- Rename unused loop vars to `_` or `_name` (B007)
+
 ## Commit Conventions
 
 Use [Conventional Commits](https://www.conventionalcommits.org/):
@@ -119,6 +147,7 @@ Scope is optional: `feat(flux): add HLLC scheme`
 
 ## Don't
 
+- Don't commit without running `make lint && make test` (see Definition of Done above)
 - Don't use bare `numpy` imports — always go through `backend.xp`
 - Don't divide by Jacobian in flux computation (use area-weighted normals directly)
 - Don't hardcode gamma=1.4 — use `gas.gamma`

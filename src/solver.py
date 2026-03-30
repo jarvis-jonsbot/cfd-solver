@@ -12,9 +12,10 @@ from typing import Callable
 from src.backend import EPS_TINY, xp
 from src.boundary import apply_freestream, apply_wall
 from src.flux import roe_flux_1d
-from src.gas import pressure, sound_speed
+from src.gas import GAMMA, pressure, sound_speed
 from src.grid import Grid
 from src.numba_kernels import HAS_NUMBA, compute_dt_numba, compute_residual_numba
+from src.pressure import solve_pressure
 from src.reconstruction import muscl_reconstruct
 
 
@@ -34,12 +35,13 @@ class SolverConfig:
 
 
 def compute_dt(Q, grid: Grid, cfl: float) -> float:
-    """Compute stable time step from CFL condition.
+    """Compute stable time step from CFL condition (acoustic + advective).
 
-    dt = CFL * min(dx / (|u| + a))
+    dt = CFL * min(|J| / (|U| + a * |n|))
 
     In curvilinear coordinates, we use the spectral radius of the
-    flux Jacobian in each direction.
+    flux Jacobian in each direction. Includes both advective and acoustic
+    wave speeds — appropriate for the explicit RK4 integrator.
     """
     if HAS_NUMBA:
         import numpy as np
@@ -76,6 +78,40 @@ def compute_dt(Q, grid: Grid, cfl: float) -> float:
     sr_eta = xp.abs(U_eta) + a * eta_mag
 
     # dt = CFL * |J| / (sr_xi + sr_eta)
+    dt_local = cfl * J_abs / (sr_xi + sr_eta + EPS_TINY)
+    return float(xp.min(dt_local))
+
+
+def compute_dt_advective(Q, grid: Grid, cfl: float) -> float:
+    """Compute stable time step using advective CFL only (no sound speed).
+
+    dt = CFL * min(|J| / |U|)
+
+    Omits the acoustic wave speed from the spectral radius. This is the
+    correct CFL criterion for the semi-implicit integrator, which treats
+    acoustic waves implicitly and is only constrained by the advective CFL.
+    Using the full acoustic CFL here would defeat the purpose of the
+    semi-implicit scheme (no large-dt benefit at low Mach numbers).
+
+    Args:
+        Q: conservative variables, shape (4, ni, nj)
+        grid: Grid object
+        cfl: advective CFL number (can be > 1 for semi-implicit)
+
+    Returns:
+        dt: stable advective time step
+    """
+    rho = Q[0]
+    u = Q[1] / rho
+    v = Q[2] / rho
+
+    J_abs = xp.abs(grid.jacobian) + EPS_TINY
+    U_xi = u * grid.xi_x_area + v * grid.xi_y_area
+    U_eta = u * grid.eta_x_area + v * grid.eta_y_area
+
+    sr_xi = xp.abs(U_xi)
+    sr_eta = xp.abs(U_eta)
+
     dt_local = cfl * J_abs / (sr_xi + sr_eta + EPS_TINY)
     return float(xp.min(dt_local))
 
@@ -170,6 +206,186 @@ def compute_residual(Q, grid: Grid) -> object:
     R /= xp.abs(grid.jacobian[None, :, :]) + EPS_TINY
 
     return R
+
+
+def step_semi_implicit(Q, dt, grid: Grid, bcs=None):
+    """One semi-implicit time step using flux splitting.
+
+    Algorithm:
+    1. Extract primitive variables (rho, u, v, p)
+    2. Compute explicit advective update for (rho, rho_u, rho_v) using first-order upwind
+    3. Compute c^2 = gamma * p / rho
+    4. Solve implicit pressure equation -> p^{n+1}
+    5. Apply pressure gradient correction to momentum
+    6. Recompute energy from updated pressure and velocities
+    7. Apply boundary conditions
+    8. Return Q^{n+1}
+
+    Args:
+        Q: conservative state, shape (4, ni, nj)
+        dt: time step (should be based on advective CFL via compute_dt_advective)
+        grid: Grid object (used for dx, dy estimates)
+        bcs: boundary condition dict (unused in Phase 1)
+
+    Returns:
+        Q_new: updated conservative state, shape (4, ni, nj)
+
+    Note:
+        Phase 1 assumes uniform grid spacing. Uses simple first-order upwind
+        for advective fluxes. Boundary conditions are periodic for now.
+    """
+    ni, nj = Q.shape[1], Q.shape[2]
+
+    # Extract primitive variables
+    rho = Q[0]
+    u = Q[1] / rho
+    v = Q[2] / rho
+    p = pressure(Q)
+
+    J_abs = xp.abs(grid.jacobian) + EPS_TINY  # cell volume (area per unit depth)
+
+    # Area-weighted contravariant volume fluxes (physical velocity · face area).
+    # U_xi_area  = u·ξ_x_area + v·ξ_y_area  ≡  (physical flux through ξ-face) * sign
+    # These are exactly what compute_dt_advective uses, so CFL is consistent.
+    # Dividing by J gives the volume-specific rate; the divergence then is
+    #   (1/J) · (F_{i+1/2} - F_{i-1/2})  with F = U_xi_area · q
+    # fmt: off
+    U_xi_area  = u * grid.xi_x_area  + v * grid.xi_y_area    # shape (ni, nj)
+    U_eta_area = u * grid.eta_x_area + v * grid.eta_y_area
+    # fmt: on
+
+    # --- Step 1: Explicit advective update for mass and momentum ---
+    # Finite-volume upwind divergence in curvilinear coordinates:
+    #   Δq/Δt = -(1/J) · [F_{i+1/2} - F_{i-1/2}]
+    # where F_{i+1/2} = upwind(U_xi_area_{i+1/2}) · q
+    # This is the correct FV form on a curvilinear grid; no dx/h factors needed
+    # because the area normals are already metric-weighted.
+
+    rho_new = rho.copy()
+    rho_u_new = Q[1].copy()
+    rho_v_new = Q[2].copy()
+
+    # ξ-direction sweep (periodic in i)
+    for i in range(ni):
+        i_m = (i - 1) % ni
+        i_p = (i + 1) % ni
+        for j in range(nj):
+            # Face velocity at i+1/2: average of neighbours (first-order)
+            # fmt: off
+            Uxi_p = 0.5 * (float(U_xi_area[i, j]) + float(U_xi_area[i_p, j]))
+            Uxi_m = 0.5 * (float(U_xi_area[i_m, j]) + float(U_xi_area[i, j]))
+            Jk    = float(J_abs[i, j])
+
+            # Upwind selection at each face
+            Frho_p = Uxi_p * float(rho[i, j])   if Uxi_p > 0 else Uxi_p * float(rho[i_p, j])
+            Frho_m = Uxi_m * float(rho[i_m, j]) if Uxi_m > 0 else Uxi_m * float(rho[i, j])
+            rho_new[i, j]   -= dt / Jk * (Frho_p - Frho_m)
+
+            Fru_p = Uxi_p * float(Q[1, i, j])   if Uxi_p > 0 else Uxi_p * float(Q[1, i_p, j])
+            Fru_m = Uxi_m * float(Q[1, i_m, j]) if Uxi_m > 0 else Uxi_m * float(Q[1, i, j])
+            rho_u_new[i, j] -= dt / Jk * (Fru_p - Fru_m)
+
+            Frv_p = Uxi_p * float(Q[2, i, j])   if Uxi_p > 0 else Uxi_p * float(Q[2, i_p, j])
+            Frv_m = Uxi_m * float(Q[2, i_m, j]) if Uxi_m > 0 else Uxi_m * float(Q[2, i, j])
+            rho_v_new[i, j] -= dt / Jk * (Frv_p - Frv_m)
+            # fmt: on
+
+    # η-direction sweep (clamped at boundaries)
+    for i in range(ni):
+        for j in range(nj):
+            j_m = max(0, j - 1)
+            j_p = min(nj - 1, j + 1)
+            # fmt: off
+            Ueta_p = 0.5 * (float(U_eta_area[i, j]) + float(U_eta_area[i, j_p]))
+            Ueta_m = 0.5 * (float(U_eta_area[i, j_m]) + float(U_eta_area[i, j]))
+            Jk     = float(J_abs[i, j])
+
+            Frho_p = Ueta_p * float(rho[i, j])   if Ueta_p > 0 else Ueta_p * float(rho[i, j_p])
+            Frho_m = Ueta_m * float(rho[i, j_m]) if Ueta_m > 0 else Ueta_m * float(rho[i, j])
+            rho_new[i, j]   -= dt / Jk * (Frho_p - Frho_m)
+
+            Fru_p = Ueta_p * float(Q[1, i, j])   if Ueta_p > 0 else Ueta_p * float(Q[1, i, j_p])
+            Fru_m = Ueta_m * float(Q[1, i, j_m]) if Ueta_m > 0 else Ueta_m * float(Q[1, i, j])
+            rho_u_new[i, j] -= dt / Jk * (Fru_p - Fru_m)
+
+            Frv_p = Ueta_p * float(Q[2, i, j])   if Ueta_p > 0 else Ueta_p * float(Q[2, i, j_p])
+            Frv_m = Ueta_m * float(Q[2, i, j_m]) if Ueta_m > 0 else Ueta_m * float(Q[2, i, j])
+            rho_v_new[i, j] -= dt / Jk * (Frv_p - Frv_m)
+            # fmt: on
+
+    # --- Step 2: Compute c^2 for pressure solve ---
+    c2 = GAMMA * p / xp.maximum(rho, EPS_TINY)
+
+    # --- Step 3: Solve implicit pressure equation ---
+    # Pass area-weighted face normals and Jacobian — the pressure operator
+    # uses the same metric quantities as the gradient correction and
+    # advective update, ensuring full coordinate consistency.
+    p_new = solve_pressure(
+        rho_new,
+        rho_u_new,
+        rho_v_new,
+        c2,
+        grid.xi_x_area,
+        grid.xi_y_area,
+        grid.eta_x_area,
+        grid.eta_y_area,
+        grid.jacobian,
+        dt,
+        p_wall_neumann=True,
+        xp=xp,
+    )
+
+    # --- Step 4: Apply pressure gradient correction to momentum ---
+    # d(rho*u)/dt = -dp/dx * dt  (implicit pressure gradient)
+    # d(rho*v)/dt = -dp/dy * dt
+    #
+    # IMPORTANT: i is the circumferential (ξ) index, j is the radial (η) index.
+    # On an O-grid these are NOT aligned with x/y — we must use the chain rule:
+    #
+    #   ∂p/∂x = ∂p/∂ξ · ξ_x + ∂p/∂η · η_x
+    #   ∂p/∂y = ∂p/∂ξ · ξ_y + ∂p/∂η · η_y
+    #
+    # Using index-space differences (dimensionless Δξ = Δη = 1) and the
+    # contravariant metrics already stored on the Grid object.
+    # Without this transform, pressure gradients are rotated by the local
+    # grid angle — producing the SW/NE pressure inversion artifact.
+    for i in range(ni):
+        i_p = (i + 1) % ni
+        i_m = (i - 1) % ni
+        for j in range(nj):
+            j_p = min(nj - 1, j + 1)
+            j_m = max(0, j - 1)
+
+            # Central differences in index space (Δξ = Δη = 1 by convention)
+            dp_dxi = (p_new[i_p, j] - p_new[i_m, j]) / 2.0
+            dp_deta = (p_new[i, j_p] - p_new[i, j_m]) / 2.0
+
+            # Chain rule: project onto physical (x, y) directions.
+            # ξ_x = ξ_x_area / |J|  (contravariant = area-normal / cell-volume)
+            # Using area normals + Jacobian avoids requiring xi_x/eta_x
+            # attributes on the Grid (which may not be set in test fixtures).
+            # fmt: off
+            Jk       = float(J_abs[i, j])
+            xi_x_ij  = float(grid.xi_x_area[i, j])  / Jk
+            xi_y_ij  = float(grid.xi_y_area[i, j])  / Jk
+            eta_x_ij = float(grid.eta_x_area[i, j]) / Jk
+            eta_y_ij = float(grid.eta_y_area[i, j]) / Jk
+            dp_dx    = dp_dxi * xi_x_ij  + dp_deta * eta_x_ij
+            dp_dy    = dp_dxi * xi_y_ij  + dp_deta * eta_y_ij
+            # fmt: on
+
+            rho_u_new[i, j] -= dt * dp_dx
+            rho_v_new[i, j] -= dt * dp_dy
+
+    # --- Step 5: Recompute energy from updated pressure and velocities ---
+    u_new = rho_u_new / xp.maximum(rho_new, EPS_TINY)
+    v_new = rho_v_new / xp.maximum(rho_new, EPS_TINY)
+    rho_E_new = p_new / (GAMMA - 1.0) + 0.5 * rho_new * (u_new**2 + v_new**2)
+
+    # Assemble updated state
+    Q_new = xp.stack([rho_new, rho_u_new, rho_v_new, rho_E_new], axis=0)
+
+    return Q_new
 
 
 def solve(Q0, grid: Grid, config: SolverConfig, callback: Callable | None = None) -> object:
