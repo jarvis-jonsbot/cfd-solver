@@ -93,6 +93,55 @@ def generate_cylinder_grid(
     return grid
 
 
+def generate_cartesian_grid(
+    ni: int = 128,
+    nj: int = 64,
+    x_min: float = -10.0,
+    x_max: float = 10.0,
+    y_min: float = -5.0,
+    y_max: float = 5.0,
+) -> Grid:
+    """Generate a uniform Cartesian grid.
+
+    Args:
+        ni: number of cells in x-direction
+        nj: number of cells in y-direction
+        x_min, x_max: domain extent in x
+        y_min, y_max: domain extent in y
+
+    Returns:
+        Grid object with Cartesian metrics
+    """
+    # Cell centers
+    x = xp.linspace(x_min, x_max, ni)
+    y = xp.linspace(y_min, y_max, nj)
+    X, Y = xp.meshgrid(x, y, indexing="ij")
+
+    dx = (x_max - x_min) / (ni - 1)
+    dy = (y_max - y_min) / (nj - 1)
+
+    # Cartesian metrics: ξ = x, η = y
+    # x_ξ = 1, x_η = 0, y_ξ = 0, y_η = 1
+    # J = x_ξ * y_η - x_η * y_ξ = 1
+    # Area-weighted normals: ξ-face has area dy, η-face has area dx
+    grid = Grid(
+        x=X,
+        y=Y,
+        ni=ni,
+        nj=nj,
+        xi_x=xp.ones((ni, nj)),
+        xi_y=xp.zeros((ni, nj)),
+        eta_x=xp.zeros((ni, nj)),
+        eta_y=xp.ones((ni, nj)),
+        jacobian=xp.ones((ni, nj)) * dx * dy,
+        xi_x_area=xp.ones((ni, nj)) * dy,
+        xi_y_area=xp.zeros((ni, nj)),
+        eta_x_area=xp.zeros((ni, nj)),
+        eta_y_area=xp.ones((ni, nj)) * dx,
+    )
+    return grid
+
+
 def _compute_metrics(grid: Grid) -> None:
     """Compute grid metric terms using central finite differences.
 
