@@ -165,56 +165,94 @@ def fill_ghost_cells(
     grad_phi_x = np.zeros_like(phi_np)
     grad_phi_y = np.zeros_like(phi_np)
 
-    # Interior points: central difference
-    grad_phi_x[1:-1, 1:-1] = (phi_np[2:, 1:-1] - phi_np[:-2, 1:-1]) / 2.0
-    grad_phi_y[1:-1, 1:-1] = (phi_np[1:-1, 2:] - phi_np[1:-1, :-2]) / 2.0
+    # Grid spacing (Cartesian uniform)
+    dx = float(xc[1, 0] - xc[0, 0]) if ni > 1 else 1.0
+    dy = float(yc[0, 1] - yc[0, 0]) if nj > 1 else 1.0
+
+    # Interior points: central difference (divided by grid spacing!)
+    grad_phi_x[1:-1, 1:-1] = (phi_np[2:, 1:-1] - phi_np[:-2, 1:-1]) / (2.0 * dx)
+    grad_phi_y[1:-1, 1:-1] = (phi_np[1:-1, 2:] - phi_np[1:-1, :-2]) / (2.0 * dy)
 
     # Edges: one-sided differences
-    grad_phi_x[0, :] = phi_np[1, :] - phi_np[0, :]
-    grad_phi_x[-1, :] = phi_np[-1, :] - phi_np[-2, :]
-    grad_phi_y[:, 0] = phi_np[:, 1] - phi_np[:, 0]
-    grad_phi_y[:, -1] = phi_np[:, -1] - phi_np[:, -2]
+    grad_phi_x[0, :] = (phi_np[1, :] - phi_np[0, :]) / dx
+    grad_phi_x[-1, :] = (phi_np[-1, :] - phi_np[-2, :]) / dx
+    grad_phi_y[:, 0] = (phi_np[:, 1] - phi_np[:, 0]) / dy
+    grad_phi_y[:, -1] = (phi_np[:, -1] - phi_np[:, -2]) / dy
 
     # Normalize gradient
     grad_mag = np.sqrt(grad_phi_x**2 + grad_phi_y**2) + EPS_TINY
     n_x = grad_phi_x / grad_mag
     n_y = grad_phi_y / grad_mag
 
-    # Fill ghost cells (only near interface: -2 < phi < 0)
+    # Grid spacing
+    dx = float(xc_np[1, 0] - xc_np[0, 0]) if ni > 1 else 1.0
+    dy = float(yc_np[0, 1] - yc_np[0, 0]) if nj > 1 else 1.0
+    # Band half-width: ghost cells are those with phi in [-band, 0)
+    # Use ~3 cells width to ensure full stencil coverage
+    band = 3.0 * max(dx, dy)
+
+    # Two passes:
+    # Pass 1: near-interface ghost cells (mirror reflection with body velocity)
+    # Pass 2: deep interior cells (constant extrapolation from body surface velocity)
     for i in range(ni):
         for j in range(nj):
-            if -2.0 < phi_np[i, j] < 0.0:
-                # Ghost cell position
-                xg = xc_np[i, j]
-                yg = yc_np[i, j]
+            phi_ij = phi_np[i, j]
+            if phi_ij >= 0.0:
+                continue  # fluid cell, leave alone
 
-                # Mirror point: project across interface along -grad(phi)
-                # distance to interface ≈ |phi|
-                d = abs(phi_np[i, j])
+            xg = xc_np[i, j]
+            yg = yc_np[i, j]
+            v_body = body.surface_velocity(np.array([xg, yg]))
+
+            if -band <= phi_ij < 0.0:
+                # Near-interface ghost cell: mirror reflection
+                d = abs(phi_ij)
                 xm = xg + 2.0 * d * n_x[i, j]
                 ym = yg + 2.0 * d * n_y[i, j]
 
-                # Bilinear interpolation of Q at mirror point
+                # Clamp mirror point to domain (avoid out-of-bounds interp)
+                xm = np.clip(xm, float(xc_np[0, 0]), float(xc_np[-1, 0]))
+                ym = np.clip(ym, float(yc_np[0, 0]), float(yc_np[0, -1]))
+
+                # Only interpolate from fluid cells (phi > 0 at mirror)
                 Q_mirror = _bilinear_interp(Q_np, xm, ym, xc_np, yc_np)
 
-                # Extract primitive variables at mirror
-                rho_m = Q_mirror[0]
+                rho_m = max(Q_mirror[0], 1e-6)  # guard against negative density
                 u_m = Q_mirror[1] / rho_m
                 v_m = Q_mirror[2] / rho_m
-                p_m = (gas.GAMMA - 1.0) * (Q_mirror[3] - 0.5 * rho_m * (u_m**2 + v_m**2))
+                p_m = max(
+                    (gas.GAMMA - 1.0) * (Q_mirror[3] - 0.5 * rho_m * (u_m**2 + v_m**2)),
+                    1e-6,
+                )
 
-                # Body surface velocity at ghost cell location
-                v_body = body.surface_velocity(np.array([xg, yg]))
-
-                # Reflect velocity: v_ghost = 2*v_body - v_mirror
+                # Reflect velocity: ghost = 2*v_body - v_mirror
                 u_ghost = 2.0 * v_body[0] - u_m
                 v_ghost = 2.0 * v_body[1] - v_m
 
-                # Set ghost cell state (mirror pressure/density, reflected velocity)
                 Q_np[0, i, j] = rho_m
                 Q_np[1, i, j] = rho_m * u_ghost
                 Q_np[2, i, j] = rho_m * v_ghost
                 Q_np[3, i, j] = p_m / (gas.GAMMA - 1.0) + 0.5 * rho_m * (u_ghost**2 + v_ghost**2)
+            else:
+                # Deep interior: set to body velocity, ambient density/pressure
+                # Sample freestream from a corner cell (guaranteed fluid)
+                rho_ref = float(Q_np[0, 0, 0])
+                # p from energy: E_corner = p/((g-1)) + 0.5*rho*|v|^2
+                u_corner = Q_np[1, 0, 0] / max(rho_ref, 1e-6)
+                v_corner = Q_np[2, 0, 0] / max(rho_ref, 1e-6)
+                ke_corner = 0.5 * rho_ref * (u_corner**2 + v_corner**2)
+                p_ref = float(max((gas.GAMMA - 1.0) * (Q_np[3, 0, 0] - ke_corner), 1e-6))
+                u_ghost = v_body[0]
+                v_ghost = v_body[1]
+                Q_np[0, i, j] = rho_ref
+                Q_np[1, i, j] = rho_ref * u_ghost
+                Q_np[2, i, j] = rho_ref * v_ghost
+                ke_ghost = 0.5 * rho_ref * (u_ghost**2 + v_ghost**2)
+                Q_np[3, i, j] = p_ref / (gas.GAMMA - 1.0) + ke_ghost
+
+    # NaN/Inf guard
+    Q_np = np.where(np.isfinite(Q_np), Q_np, 0.0)
+    Q_np[0] = np.maximum(Q_np[0], 1e-6)  # density must be positive
 
     # Convert back to backend array
     return xp.array(Q_np)  # type: ignore[no-any-return]
@@ -308,45 +346,53 @@ def compute_interface_forces(
     dx = xc_np[1, 0] - xc_np[0, 0] if ni > 1 else 1.0
     dy = yc_np[0, 1] - yc_np[0, 0] if nj > 1 else 1.0
 
-    # Compute pressure
-    rho = Q_np[0]
+    # Compute pressure (guard against divide-by-zero in ghost cells)
+    rho = np.maximum(Q_np[0], 1e-6)
     u = Q_np[1] / rho
     v = Q_np[2] / rho
     p = (gas.GAMMA - 1.0) * (Q_np[3] - 0.5 * rho * (u**2 + v**2))
+    p = np.maximum(p, 1e-6)  # guard against negative pressure
+    p = np.where(np.isfinite(p), p, 1.0)  # replace NaN/Inf with ambient
 
-    # Gradient of phi (interface normal)
-    grad_phi_x = np.zeros_like(phi_np)
-    grad_phi_y = np.zeros_like(phi_np)
-    grad_phi_x[1:-1, :] = (phi_np[2:, :] - phi_np[:-2, :]) / (2.0 * dx)
-    grad_phi_y[:, 1:-1] = (phi_np[:, 2:] - phi_np[:, :-2]) / (2.0 * dy)
-
-    # Normalize to get outward normal (points into fluid, away from body)
-    grad_mag = np.sqrt(grad_phi_x**2 + grad_phi_y**2) + EPS_TINY
-    n_x = grad_phi_x / grad_mag
-    n_y = grad_phi_y / grad_mag
-
-    # Sum over interface cells: phi changes sign across a face
+    # Sum over interface faces: phi changes sign across a face
+    # x-faces: between (i,j) and (i+1,j)
     for i in range(ni - 1):
+        for j in range(nj):
+            if phi_np[i, j] * phi_np[i + 1, j] < 0:  # sign change = interface
+                # Outward normal from body (pointing into fluid = phi>0 side)
+                if phi_np[i + 1, j] > 0:  # fluid is to the right
+                    nx_face, ny_face = 1.0, 0.0  # normal points right (into fluid)
+                else:
+                    nx_face, ny_face = -1.0, 0.0  # normal points left (into fluid)
+                p_face = 0.5 * (p[i, j] + p[i + 1, j])
+                dA = dy  # x-face has area dy
+                x_face = 0.5 * (xc_np[i, j] + xc_np[i + 1, j])
+                y_face = 0.5 * (yc_np[i, j] + yc_np[i + 1, j])
+                # Force on body: pressure pushes INWARD = -nx_face direction
+                F[0] -= p_face * nx_face * dA
+                F[1] -= p_face * ny_face * dA
+                r = np.array([x_face - body.position[0], y_face - body.position[1]])
+                tau -= r[0] * (p_face * ny_face * dA) - r[1] * (p_face * nx_face * dA)
+
+    # y-faces: between (i,j) and (i,j+1)
+    for i in range(ni):
         for j in range(nj - 1):
-            # Check if interface crosses this cell
-            # Interface cells: -1 < phi < 1 (within one cell of interface)
-            if -1.0 < phi_np[i, j] < 1.0:
-                # Face area element (2D: line segment, dA = dx or dy)
-                # For simplicity, use cell area * |grad(phi)| as interface area proxy
-                dA = dx * dy * grad_mag[i, j]
+            if phi_np[i, j] * phi_np[i, j + 1] < 0:
+                if phi_np[i, j + 1] > 0:
+                    nx_face, ny_face = 0.0, 1.0
+                else:
+                    nx_face, ny_face = 0.0, -1.0
+                p_face = 0.5 * (p[i, j] + p[i, j + 1])
+                dA = dx
+                x_face = 0.5 * (xc_np[i, j] + xc_np[i, j + 1])
+                y_face = 0.5 * (yc_np[i, j] + yc_np[i, j + 1])
+                F[0] -= p_face * nx_face * dA
+                F[1] -= p_face * ny_face * dA
+                r = np.array([x_face - body.position[0], y_face - body.position[1]])
+                tau -= r[0] * (p_face * ny_face * dA) - r[1] * (p_face * nx_face * dA)
 
-                # Pressure force: F = -p * n * dA
-                # (minus sign: normal points outward from body)
-                # n = grad(phi) points outward (into fluid),
-                # so force on body is -p*n*dA
-                F[0] -= p[i, j] * n_x[i, j] * dA
-                F[1] -= p[i, j] * n_y[i, j] * dA
-
-                # Torque: tau = (r × F)_z = r_x * F_y - r_y * F_x
-                r_x = xc_np[i, j] - body.position[0]
-                r_y = yc_np[i, j] - body.position[1]
-                dF_x = -p[i, j] * n_x[i, j] * dA
-                dF_y = -p[i, j] * n_y[i, j] * dA
-                tau += r_x * dF_y - r_y * dF_x
+    # Guard against NaN/Inf in force and torque
+    F = np.where(np.isfinite(F), F, 0.0)
+    tau = tau if np.isfinite(tau) else 0.0
 
     return F, tau

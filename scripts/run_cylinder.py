@@ -134,11 +134,66 @@ def main():
         t = 0.0
         trajectory = []  # Store body position/velocity history
 
+        # Initialize with shock wave at x = -3.0
+        # Rankine-Hugoniot relations for M=3, gamma=1.4, p_inf=1, rho_inf=1
+        # Non-dim: a_inf = sqrt(gamma*p/rho) = 1.183, u_inf = M*a = 3.55
+        # Pre-shock (x >= -3.0): rho=1.0, u=3.55, v=0.0, p=1.0
+        # Post-shock (x < -3.0): rho=3.857, u=0.920, v=0.0, p=10.333
+        print("Initializing shock wave at x = -3.0 (Mach 3 normal shock)")
+        import numpy as np
+
+        xc_np = np.array(grid.x)
+        gamma = gas.GAMMA
+
+        # Post-shock state (downstream, x < -3.0) from Rankine-Hugoniot
+        rho_post = 3.857143
+        u_post = 0.920279
+        v_post = 0.0
+        p_post = 10.333333
+        E_post = p_post / (gamma - 1.0) + 0.5 * rho_post * (u_post**2 + v_post**2)
+
+        # Pre-shock state (upstream, x >= -3.0) is already set to freestream above
+        # Just overwrite the post-shock region
+        shock_x = -3.0
+        post_shock_mask = xc_np < shock_x
+        Q_np = np.array(Q)
+        Q_np[0, post_shock_mask] = rho_post
+        Q_np[1, post_shock_mask] = rho_post * u_post
+        Q_np[2, post_shock_mask] = rho_post * v_post
+        Q_np[3, post_shock_mask] = E_post
+        Q = xp.array(Q_np)
+
+        a_inf = float((gamma * 1.0 / 1.0) ** 0.5)
+        u_pre = float(args.mach * a_inf)
+        print(f"  Pre-shock:  rho={1.0:.4f}, u={u_pre:.4f}, p={1.0:.4f}")
+        print(f"  Post-shock: rho={rho_post:.4f}, u={u_post:.4f}, p={p_post:.4f}")
+
+        # Initial ghost cell fill BEFORE first dt computation
+        # (otherwise interior cells have stale freestream state → bad CFL)
+        import numpy as _np_init
+
+        from src.levelset import compute_levelset as _cl_init
+        from src.levelset import fill_ghost_cells as _fgc_init
+
+        _phi0 = _cl_init(body, _np_init.array(grid.x), _np_init.array(grid.y))
+        Q = _fgc_init(Q, _phi0, body, _np_init.array(grid.x), _np_init.array(grid.y), gas)
+
         for step in range(1, args.steps + 1):
-            # Compute time step (use acoustic CFL for explicit RK4)
+            # Compute time step from fluid CFL
+            # Note: Q here is the OUTPUT of the previous step_partitioned_fsi, which
+            # already has ghost cells filled at the END of that step.
+            import numpy as np
+
             from src.solver import compute_dt
 
             dt = compute_dt(Q, grid, args.cfl)
+
+            # Additional CFL constraint from body velocity
+            dx_min = float(abs(grid.x[1, 0] - grid.x[0, 0]))
+            v_body_mag = float(np.linalg.norm(body.velocity))
+            if v_body_mag > 1e-10:
+                dt_body = args.cfl * dx_min / (v_body_mag + 1e-10)
+                dt = min(dt, dt_body)
 
             # Partitioned FSI step
             Q, body = step_partitioned_fsi(Q, body, grid, gas, dt, fluid_integrator="rk4")
