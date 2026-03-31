@@ -390,6 +390,80 @@ def step_semi_implicit(Q, dt, grid: Grid, bcs=None):
     return Q_new
 
 
+def step_partitioned_fsi(Q, body, grid: Grid, gas, dt, fluid_integrator="rk4"):
+    """One partitioned FSI time step: fluid forces → body motion → fluid update.
+
+    Partitioned (explicitly sequential) coupling:
+    1. Compute level set phi at body position
+    2. Fill ghost cells for no-penetration BC
+    3. Compute pressure forces/torque on body
+    4. Advance body by dt (Verlet)
+    5. Recompute phi at new body position, refill ghost cells
+    6. Advance fluid by dt (using specified integrator)
+
+    Args:
+        Q: conservative state, shape (4, ni, nj)
+        body: RigidBody object
+        grid: Grid object (Cartesian)
+        gas: gas module for EOS
+        dt: time step
+        fluid_integrator: "rk4" or "semi_implicit"
+
+    Returns:
+        Q_new: updated fluid state, shape (4, ni, nj)
+        body_new: updated RigidBody
+    """
+    from src.levelset import compute_interface_forces, compute_levelset, fill_ghost_cells
+
+    xc = grid.x
+    yc = grid.y
+
+    # Convert grid arrays to NumPy for level set / ghost cell operations
+    import numpy as np
+
+    xc_np = np.array(xc)
+    yc_np = np.array(yc)
+
+    # --- Step 1: Compute phi, fill ghost cells ---
+    phi = compute_levelset(body, xc_np, yc_np)
+    Q = fill_ghost_cells(Q, phi, body, xc_np, yc_np, gas)
+
+    # --- Step 2: Compute forces on body ---
+    F, tau = compute_interface_forces(Q, phi, body, xc_np, yc_np, gas)
+
+    # --- Step 3: Advance body ---
+    body_new = body.apply_forces(F, tau, dt)
+
+    # --- Step 4: Recompute phi at new position, refill ghost cells ---
+    phi_new = compute_levelset(body_new, xc_np, yc_np)
+    Q = fill_ghost_cells(Q, phi_new, body_new, xc_np, yc_np, gas)
+
+    # --- Step 5: Advance fluid ---
+    if fluid_integrator == "semi_implicit":
+        Q_new = step_semi_implicit(Q, dt, grid)
+    else:
+        # Single RK4 step
+        k1 = compute_residual(Q, grid)
+        Q1 = Q + 0.5 * dt * k1
+        Q1 = fill_ghost_cells(Q1, phi_new, body_new, xc_np, yc_np, gas)
+
+        k2 = compute_residual(Q1, grid)
+        Q2 = Q + 0.5 * dt * k2
+        Q2 = fill_ghost_cells(Q2, phi_new, body_new, xc_np, yc_np, gas)
+
+        k3 = compute_residual(Q2, grid)
+        Q3 = Q + dt * k3
+        Q3 = fill_ghost_cells(Q3, phi_new, body_new, xc_np, yc_np, gas)
+
+        k4 = compute_residual(Q3, grid)
+        Q_new = Q + (dt / 6.0) * (k1 + 2.0 * k2 + 2.0 * k3 + k4)
+
+    # Final ghost cell fill
+    Q_new = fill_ghost_cells(Q_new, phi_new, body_new, xc_np, yc_np, gas)
+
+    return Q_new, body_new
+
+
 def solve(Q0, grid: Grid, config: SolverConfig, callback: Callable | None = None) -> object:
     """Run the solver with RK4 time integration.
 
