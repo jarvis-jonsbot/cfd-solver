@@ -18,9 +18,15 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from src.backend import xp
 from src.boundary import apply_freestream, apply_wall, freestream_state
 from src.gas import pressure
-from src.grid import generate_cylinder_grid
+from src.grid import generate_cartesian_grid, generate_cylinder_grid
 from src.io import save_solution
-from src.solver import SolverConfig, compute_dt_advective, solve, step_semi_implicit
+from src.solver import (
+    SolverConfig,
+    compute_dt_advective,
+    solve,
+    step_partitioned_fsi,
+    step_semi_implicit,
+)
 
 
 def main():
@@ -41,6 +47,11 @@ def main():
         action="store_true",
         help="Use semi-implicit pressure solver",
     )
+    parser.add_argument(
+        "--rigid-body",
+        action="store_true",
+        help="Use rigid body FSI mode (Mach 3 shock hit, free cylinder)",
+    )
     args = parser.parse_args()
 
     alpha_rad = args.alpha * xp.pi / 180.0
@@ -56,16 +67,32 @@ def main():
     print(f"Mach = {args.mach}, AoA = {args.alpha}°, CFL = {args.cfl}")
     print(f"Grid: {args.ni} x {args.nj}, R_outer = {args.r_outer}")
     print(f"Max steps: {args.steps}")
+    if args.rigid_body:
+        print("[Rigid Body FSI Mode] Free cylinder, shock hit at Mach 3")
     print()
 
     # Generate grid
-    print("Generating grid...")
-    grid = generate_cylinder_grid(
-        ni=args.ni,
-        nj=args.nj,
-        r_outer=args.r_outer,
-        stretch=args.stretch,
-    )
+    if args.rigid_body:
+        print("Generating Cartesian grid for rigid body mode...")
+        grid = generate_cartesian_grid(
+            ni=args.ni,
+            nj=args.nj,
+            x_min=-10.0,
+            x_max=10.0,
+            y_min=-5.0,
+            y_max=5.0,
+        )
+        # Override Mach number for shock-hit scenario
+        args.mach = 3.0
+        print(f"  (Cartesian grid for free body, Mach = {args.mach})")
+    else:
+        print("Generating O-grid...")
+        grid = generate_cylinder_grid(
+            ni=args.ni,
+            nj=args.nj,
+            r_outer=args.r_outer,
+            stretch=args.stretch,
+        )
     print(f"Grid: {grid.ni} x {grid.nj} = {grid.ni * grid.nj} cells")
 
     # Initialize with freestream
@@ -91,7 +118,81 @@ def main():
 
     # Run solver
     print("Starting solver...")
-    if args.semi_implicit:
+    if args.rigid_body:
+        print("Using partitioned FSI coupling (Phase 2)")
+        # Import rigid body module
+        import numpy as np
+
+        from src import gas
+        from src.rigidbody import make_circle
+
+        # Create a free circular cylinder at origin
+        body = make_circle(center=np.array([0.0, 0.0]), radius=0.5, density=1.0)
+
+        # Manual time loop for FSI
+        Q = Q0.copy()
+        t = 0.0
+        trajectory = []  # Store body position/velocity history
+
+        for step in range(1, args.steps + 1):
+            # Compute time step (use acoustic CFL for explicit RK4)
+            from src.solver import compute_dt
+
+            dt = compute_dt(Q, grid, args.cfl)
+
+            # Partitioned FSI step
+            Q, body = step_partitioned_fsi(Q, body, grid, gas, dt, fluid_integrator="rk4")
+            t += dt
+
+            # Record trajectory
+            trajectory.append(
+                {
+                    "t": t,
+                    "x": float(body.position[0]),
+                    "y": float(body.position[1]),
+                    "vx": float(body.velocity[0]),
+                    "vy": float(body.velocity[1]),
+                    "angle": float(body.angle),
+                    "omega": float(body.angular_velocity),
+                }
+            )
+
+            if step % args.print_every == 0:
+                p = pressure(Q)
+                rho_min = float(xp.min(Q[0]))
+                rho_max = float(xp.max(Q[0]))
+                p_min = float(xp.min(p))
+                p_max = float(xp.max(p))
+                print(
+                    f"Step {step:6d}  t={t:.6f}  dt={dt:.2e}  "
+                    f"rho=[{rho_min:.4f}, {rho_max:.4f}]  p=[{p_min:.4f}, {p_max:.4f}]"
+                )
+                print(
+                    f"  Body: x=[{body.position[0]:.4f}, {body.position[1]:.4f}]  "
+                    f"v=[{body.velocity[0]:.4f}, {body.velocity[1]:.4f}]"
+                )
+
+            if step % args.save_every == 0:
+                save_callback(step, t, Q)
+
+        Q_final = Q
+
+        # Save trajectory
+        os.makedirs(args.output, exist_ok=True)
+        import numpy as np
+
+        np.savez(
+            f"{args.output}/body_trajectory.npz",
+            time=[rec["t"] for rec in trajectory],
+            x=[rec["x"] for rec in trajectory],
+            y=[rec["y"] for rec in trajectory],
+            vx=[rec["vx"] for rec in trajectory],
+            vy=[rec["vy"] for rec in trajectory],
+            angle=[rec["angle"] for rec in trajectory],
+            omega=[rec["omega"] for rec in trajectory],
+        )
+        print(f"Body trajectory saved to {args.output}/body_trajectory.npz")
+    elif args.semi_implicit:
         print("Using semi-implicit pressure solver (Phase 1)")
         print("  Time step computed from advective CFL only (acoustic waves treated implicitly)")
         # Manual time loop for semi-implicit
