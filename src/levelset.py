@@ -354,7 +354,10 @@ def compute_interface_forces(
     p = np.maximum(p, 1e-6)  # guard against negative pressure
     p = np.where(np.isfinite(p), p, 1.0)  # replace NaN/Inf with ambient
 
-    # Sum over interface faces: phi changes sign across a face
+    # Sum over interface faces: phi changes sign across a face.
+    # IMPORTANT: use only the FLUID side's pressure at each interface face.
+    # Ghost cells have rho=1e-6 + reflected velocity → garbage pressure that
+    # contaminates the force integral if averaged naively.
     # x-faces: between (i,j) and (i+1,j)
     for i in range(ni - 1):
         for j in range(nj):
@@ -362,9 +365,10 @@ def compute_interface_forces(
                 # Outward normal from body (pointing into fluid = phi>0 side)
                 if phi_np[i + 1, j] > 0:  # fluid is to the right
                     nx_face, ny_face = 1.0, 0.0  # normal points right (into fluid)
+                    p_face = p[i + 1, j]   # fluid pressure only
                 else:
                     nx_face, ny_face = -1.0, 0.0  # normal points left (into fluid)
-                p_face = 0.5 * (p[i, j] + p[i + 1, j])
+                    p_face = p[i, j]       # fluid pressure only
                 dA = dy  # x-face has area dy
                 x_face = 0.5 * (xc_np[i, j] + xc_np[i + 1, j])
                 y_face = 0.5 * (yc_np[i, j] + yc_np[i + 1, j])
@@ -380,9 +384,10 @@ def compute_interface_forces(
             if phi_np[i, j] * phi_np[i, j + 1] < 0:
                 if phi_np[i, j + 1] > 0:
                     nx_face, ny_face = 0.0, 1.0
+                    p_face = p[i, j + 1]   # fluid side
                 else:
                     nx_face, ny_face = 0.0, -1.0
-                p_face = 0.5 * (p[i, j] + p[i, j + 1])
+                    p_face = p[i, j]       # fluid side
                 dA = dx
                 x_face = 0.5 * (xc_np[i, j] + xc_np[i, j + 1])
                 y_face = 0.5 * (yc_np[i, j] + yc_np[i, j + 1])
