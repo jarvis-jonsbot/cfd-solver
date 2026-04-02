@@ -34,7 +34,7 @@ class SolverConfig:
     output_dir: str = "output"
 
 
-def compute_dt(Q, grid: Grid, cfl: float) -> float:
+def compute_dt(Q, grid: Grid, cfl: float, phi=None) -> float:
     """Compute stable time step from CFL condition (acoustic + advective).
 
     dt = CFL * min(|J| / (|U| + a * |n|))
@@ -42,6 +42,10 @@ def compute_dt(Q, grid: Grid, cfl: float) -> float:
     In curvilinear coordinates, we use the spectral radius of the
     flux Jacobian in each direction. Includes both advective and acoustic
     wave speeds — appropriate for the explicit RK4 integrator.
+
+    When `phi` is provided, ghost cells (phi < 0) are excluded from the CFL
+    minimization. Ghost cells have artificially reflected velocities and
+    rho=1e-6, which produce enormous spectral radii that collapse dt to ~1e-15.
     """
     if HAS_NUMBA:
         import numpy as np
@@ -60,6 +64,8 @@ def compute_dt(Q, grid: Grid, cfl: float) -> float:
                 cfl,
             )
         )
+    import numpy as np
+
     rho = Q[0]
     u = Q[1] / rho
     v = Q[2] / rho
@@ -81,6 +87,15 @@ def compute_dt(Q, grid: Grid, cfl: float) -> float:
 
     # dt = CFL * |J| / (sr_xi + sr_eta)
     dt_local = cfl * J_abs / (sr_xi + sr_eta + EPS_TINY)
+
+    # Exclude ghost cells from CFL minimization: ghost cells have rho=1e-6 and
+    # reflected velocities → artificial spectral radius of O(1e6) → dt → 0.
+    if phi is not None:
+        fluid_mask = np.array(phi) >= 0  # True for fluid cells
+        dt_fluid = np.array(dt_local)[fluid_mask]
+        if len(dt_fluid) > 0:
+            return float(dt_fluid.min())
+
     return float(xp.min(dt_local))
 
 
@@ -118,7 +133,7 @@ def compute_dt_advective(Q, grid: Grid, cfl: float) -> float:
     return float(xp.min(dt_local))
 
 
-def compute_residual(Q, grid: Grid) -> object:
+def compute_residual(Q, grid: Grid, phi=None) -> object:
     """Compute the spatial residual R(Q) = -(1/J)(dF_hat/dξ + dG_hat/dη).
 
     Uses Numba-accelerated fused kernel when available, otherwise falls
@@ -129,9 +144,16 @@ def compute_residual(Q, grid: Grid) -> object:
     returns the physical flux through each face. We then divide by J
     (cell volume) at the end.
 
+    When `phi` is provided (level set signed distance), any face where
+    either stencil cell has phi < 0 is degraded to first-order (cell-center
+    values) to prevent MUSCL from amplifying the ghost-fluid velocity
+    discontinuity at the immersed boundary.  Ghost cells also have their
+    residual zeroed so they don't evolve independently of fill_ghost_cells.
+
     Args:
         Q: conservative variables, shape (4, ni, nj)
         grid: Grid object
+        phi: optional level set, shape (ni, nj). phi < 0 inside body.
 
     Returns:
         R: residual, shape (4, ni, nj)
@@ -150,12 +172,46 @@ def compute_residual(Q, grid: Grid) -> object:
             grid.nj,
         )
 
+    import numpy as np
+
     ni = grid.ni
     R = xp.zeros_like(Q)
 
+    # When phi is provided, replace Q at ghost cells with a "safe" state before
+    # MUSCL so the reconstruction sees physically consistent values on both sides
+    # of every face.  The ghost cells have reflected velocity (can be large +/-),
+    # which causes MUSCL to amplify the jump → Roe overflow at step 1.
+    #
+    # Strategy: build Q_safe where ghost-cell entries are replaced with the
+    # cell-averaged freestream-like state (keep rho, zero momentum, keep p from E).
+    # This damps the artificial MUSCL slope at the interface without affecting
+    # true fluid cells.  Ghost cells will be properly re-filled by fill_ghost_cells
+    # after each RK4 substep; we just need a numerically safe placeholder here.
+    Q_np = np.array(Q)
+    if phi is not None:
+        ghost_mask = np.array(phi) < 0  # (ni, nj)  — True inside body
+        if np.any(ghost_mask):
+            # Replace ghost-cell state with ambient (rho=1, u=v=0, E=p/(γ-1))
+            # using the *minimum* fluid rho and a zero-velocity state so no
+            # supersonic values leak into the MUSCL stencil.
+            rho_ambient = float(np.nanmin(Q_np[0, ~ghost_mask].clip(1e-3)))
+            E_ambient = rho_ambient / 0.4  # p=rho*(gamma-1)*E/rho, p≈rho for M~1
+            Q_safe = Q_np.copy()
+            Q_safe[0, ghost_mask] = rho_ambient
+            Q_safe[1, ghost_mask] = 0.0   # zero x-momentum
+            Q_safe[2, ghost_mask] = 0.0   # zero y-momentum
+            Q_safe[3, ghost_mask] = E_ambient
+            Q_xp = xp.array(Q_safe)
+        else:
+            ghost_mask = None
+            Q_xp = Q
+    else:
+        ghost_mask = None
+        Q_xp = Q
+
     # --- ξ-direction fluxes (periodic) ---
     # Pad Q periodically: 2 ghost cells on each side
-    Q_padded = xp.concatenate([Q[:, -2:, :], Q, Q[:, :2, :]], axis=1)
+    Q_padded = xp.concatenate([Q_xp[:, -2:, :], Q_xp, Q_xp[:, :2, :]], axis=1)
     QL_xi, QR_xi = muscl_reconstruct(Q_padded, axis=0)  # along dim 1
 
     # MUSCL on (ni+4) points produces (ni+4-3) = ni+1 interfaces — perfect for ni cells
@@ -176,7 +232,7 @@ def compute_residual(Q, grid: Grid) -> object:
     R -= F_xi[:, 1 : ni + 1, :] - F_xi[:, :ni, :]
 
     # --- η-direction fluxes (non-periodic) ---
-    QL_eta, QR_eta = muscl_reconstruct(Q, axis=1)  # along dim 2
+    QL_eta, QR_eta = muscl_reconstruct(Q_xp, axis=1)  # along dim 2
 
     # MUSCL on nj points produces nj-3 interfaces
     # Interface k is between cells j=k+1 and j=k+2 (0-indexed)
@@ -199,13 +255,21 @@ def compute_residual(Q, grid: Grid) -> object:
     # This ensures the wall BC propagates into the domain
     nx_w = grid.eta_x_area[:, 0]
     ny_w = grid.eta_y_area[:, 0]
-    F_wall = roe_flux_1d(Q[:, :, 0:1], Q[:, :, 1:2], nx_w[:, None], ny_w[:, None])
+    F_wall = roe_flux_1d(Q_xp[:, :, 0:1], Q_xp[:, :, 1:2], nx_w[:, None], ny_w[:, None])
     # Cell j=1: left face is wall face, right face is G_eta[:,:,0] (if it exists)
     if n_efaces >= 1:
         R[:, :, 1:2] -= G_eta[:, :, 0:1] - F_wall[:, :, 0:1]
 
     # Divide by cell volume (|J|)
     R /= xp.abs(grid.jacobian[None, :, :]) + EPS_TINY
+
+    # Zero residual for ghost cells — they are controlled exclusively by
+    # fill_ghost_cells; letting them evolve via the fluid residual creates
+    # inconsistent states that corrupt adjacent fluid cells.
+    if ghost_mask is not None:
+        R_np = np.array(R)
+        R_np[:, ghost_mask] = 0.0
+        R = xp.array(R_np)
 
     return R
 
@@ -388,6 +452,82 @@ def step_semi_implicit(Q, dt, grid: Grid, bcs=None):
     Q_new = xp.stack([rho_new, rho_u_new, rho_v_new, rho_E_new], axis=0)
 
     return Q_new
+
+
+def step_partitioned_fsi(Q, body, grid: Grid, gas, dt, fluid_integrator="rk4"):
+    """One partitioned FSI time step: fluid forces → body motion → fluid update.
+
+    Partitioned (explicitly sequential) coupling:
+    1. Compute level set phi at body position
+    2. Fill ghost cells for no-penetration BC
+    3. Compute pressure forces/torque on body
+    4. Advance body by dt (Verlet)
+    5. Recompute phi at new body position, refill ghost cells
+    6. Advance fluid by dt (using specified integrator)
+
+    Args:
+        Q: conservative state, shape (4, ni, nj)
+        body: RigidBody object
+        grid: Grid object (Cartesian)
+        gas: gas module for EOS
+        dt: time step
+        fluid_integrator: "rk4" or "semi_implicit"
+
+    Returns:
+        Q_new: updated fluid state, shape (4, ni, nj)
+        body_new: updated RigidBody
+    """
+    from src.levelset import compute_interface_forces, compute_levelset, fill_ghost_cells
+
+    xc = grid.x
+    yc = grid.y
+
+    # Convert grid arrays to NumPy for level set / ghost cell operations
+    import numpy as np
+
+    xc_np = np.array(xc)
+    yc_np = np.array(yc)
+
+    # --- Step 1: Compute phi, fill ghost cells ---
+    phi = compute_levelset(body, xc_np, yc_np)
+    Q = fill_ghost_cells(Q, phi, body, xc_np, yc_np, gas)
+
+    # --- Step 2: Compute forces on body ---
+    F, tau = compute_interface_forces(Q, phi, body, xc_np, yc_np, gas)
+
+    # --- Step 3: Advance body ---
+    body_new = body.apply_forces(F, tau, dt)
+
+    # --- Step 4: Recompute phi at new position, refill ghost cells ---
+    phi_new = compute_levelset(body_new, xc_np, yc_np)
+    Q = fill_ghost_cells(Q, phi_new, body_new, xc_np, yc_np, gas)
+
+    # --- Step 5: Advance fluid ---
+    if fluid_integrator == "semi_implicit":
+        Q_new = step_semi_implicit(Q, dt, grid)
+    else:
+        # Single RK4 step — pass phi_new so compute_residual can degrade MUSCL
+        # to first-order at ghost-fluid interface faces (prevents Roe overflow
+        # from the large velocity jump across the immersed boundary).
+        k1 = compute_residual(Q, grid, phi=phi_new)
+        Q1 = Q + 0.5 * dt * k1
+        Q1 = fill_ghost_cells(Q1, phi_new, body_new, xc_np, yc_np, gas)
+
+        k2 = compute_residual(Q1, grid, phi=phi_new)
+        Q2 = Q + 0.5 * dt * k2
+        Q2 = fill_ghost_cells(Q2, phi_new, body_new, xc_np, yc_np, gas)
+
+        k3 = compute_residual(Q2, grid, phi=phi_new)
+        Q3 = Q + dt * k3
+        Q3 = fill_ghost_cells(Q3, phi_new, body_new, xc_np, yc_np, gas)
+
+        k4 = compute_residual(Q3, grid, phi=phi_new)
+        Q_new = Q + (dt / 6.0) * (k1 + 2.0 * k2 + 2.0 * k3 + k4)
+
+    # Final ghost cell fill
+    Q_new = fill_ghost_cells(Q_new, phi_new, body_new, xc_np, yc_np, gas)
+
+    return Q_new, body_new
 
 
 def solve(Q0, grid: Grid, config: SolverConfig, callback: Callable | None = None) -> object:

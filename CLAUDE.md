@@ -10,11 +10,12 @@
 ## Numerical Methods
 
 - **Equations**: 2D compressible Euler equations in conservation form (density, x-momentum, y-momentum, energy)
-- **Grid**: Structured body-fitted O-grid around a cylinder
+- **Grid**: Structured body-fitted O-grid around a cylinder (or Cartesian for FSI)
 - **Flux scheme**: Roe's approximate Riemann solver with Harten's entropy fix
 - **Reconstruction**: MUSCL with van Leer limiter (2nd order)
-- **Time integration**: Explicit 4-stage Runge-Kutta (RK4)
-- **Boundary conditions**: Freestream (characteristic-based), solid wall (slip/no-slip), periodic (circumferential)
+- **Time integration**: Explicit 4-stage Runge-Kutta (RK4) or semi-implicit pressure solver
+- **Boundary conditions**: Freestream (characteristic-based), solid wall (slip/no-slip), periodic (circumferential), immersed boundary (level set)
+- **FSI coupling**: Partitioned rigid body dynamics with level set ghost cells (Phase 2)
 
 ## Project Structure
 
@@ -28,22 +29,27 @@ cfd-solver/
 ├── .github/workflows/ci.yml
 ├── src/
 │   ├── __init__.py
-│   ├── grid.py            # O-grid generator; stores both contravariant metrics AND area-weighted face normals
-│   ├── solver.py          # Main solver loop, RK4 time stepping, residual computation
+│   ├── grid.py            # O-grid and Cartesian grid generators; stores both contravariant metrics AND area-weighted face normals
+│   ├── solver.py          # Main solver loop, RK4 time stepping, semi-implicit pressure, partitioned FSI
 │   ├── flux.py            # Roe flux computation
 │   ├── reconstruction.py  # MUSCL reconstruction with limiters
 │   ├── boundary.py        # Boundary condition implementations
 │   ├── gas.py             # Equation of state, thermodynamic relations
-│   ├── backend.py         # Array backend abstraction (CuPy/NumPy)
+│   ├── backend.py         # Array backend abstraction (MLX/CuPy/NumPy)
+│   ├── pressure.py        # Implicit pressure solver (Phase 1)
+│   ├── rigidbody.py       # Rigid body dynamics (Phase 2)
+│   ├── levelset.py        # Level set and ghost cells for immersed boundaries (Phase 2)
 │   └── io.py              # Solution I/O, checkpointing
 ├── scripts/
 │   ├── run_cylinder.py    # Main driver script for cylinder flow
 │   └── visualize.py       # Post-processing and visualization (matplotlib)
 └── tests/
-    ├── test_flux.py       # Validate Roe flux against exact solutions
-    ├── test_grid.py       # Grid quality checks
-    ├── test_sod.py        # Sod shock tube validation (1D subset)
-    └── test_smoke.py      # End-to-end solver smoke tests (NaN/Inf checks)
+    ├── test_flux.py          # Validate Roe flux against exact solutions
+    ├── test_grid.py          # Grid quality checks
+    ├── test_sod.py           # Sod shock tube validation (1D subset)
+    ├── test_smoke.py         # End-to-end solver smoke tests (NaN/Inf checks)
+    ├── test_semi_implicit.py # Semi-implicit pressure solver tests (Phase 1)
+    └── test_rigidbody.py     # Rigid body dynamics and FSI tests (Phase 2)
 ```
 
 ## Key Design Decisions
@@ -52,6 +58,7 @@ cfd-solver/
 2. **Conservative variables**: Store as 4D array `Q[4, ni, nj]` — density, rho*u, rho*v, rho*E
 3. **Area-weighted face normals**: Grid stores both contravariant metrics (`xi_x`, etc. — divided by J) and area-weighted normals (`xi_x_area = y_eta`, `xi_y_area = -x_eta`, etc. — NOT divided by J). The flux computation uses the area-weighted normals so the Roe solver returns physical flux through each face, which is then divided by cell volume (|J|) to get the residual.
 4. **CFL-based time stepping**: Compute stable dt from CFL condition each step using area-weighted spectral radii.
+5. **Partitioned FSI** (Phase 2): Rigid body dynamics with level set immersed boundary. Fluid forces → body motion → ghost cell update → fluid step. No inner iteration (explicit sequential coupling).
 
 ## Critical Numerical Notes
 
@@ -83,6 +90,10 @@ python scripts/visualize.py --input output/solution.npz
 # Apple Silicon GPU acceleration:
 CFD_BACKEND=mlx python scripts/run_cylinder.py --mach 0.3 --steps 5000
 # or: pip install -e ".[gpu-apple]"
+
+# Rigid body FSI mode (Phase 2):
+python scripts/run_cylinder.py --rigid-body --steps 1000
+# Automatically uses Cartesian grid, Mach 3 shock hit, saves body trajectory
 ```
 
 ## Validation Targets
