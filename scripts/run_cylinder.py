@@ -126,8 +126,14 @@ def main():
         from src import gas
         from src.rigidbody import make_circle
 
-        # Create a free circular cylinder at origin
-        body = make_circle(center=np.array([0.0, 0.0]), radius=0.5, density=1.0)
+        # Create a free circular cylinder at origin.
+        # Density must be much larger than the fluid (rho_fluid ~ 1–4 in non-dim units)
+        # so the body isn't launched at unphysical acceleration.
+        # A solid aluminium-like cylinder in air at Mach 3 has density ratio ~2700.
+        # We use density=100 here (100× freestream) as a physically reasonable
+        # intermediate value that keeps the simulation well-behaved while still
+        # showing visible body motion during the simulation window.
+        body = make_circle(center=np.array([0.0, 0.0]), radius=0.5, density=100.0)
 
         # Manual time loop for FSI
         Q = Q0.copy()
@@ -184,9 +190,13 @@ def main():
             # already has ghost cells filled at the END of that step.
             import numpy as np
 
+            from src.levelset import compute_levelset
             from src.solver import compute_dt
 
-            dt = compute_dt(Q, grid, args.cfl)
+            # Recompute phi at current body position to exclude ghost cells from CFL.
+            # Ghost cells have rho=1e-6 + reflected velocity → dt collapses without this.
+            _phi_cfl = compute_levelset(body, np.array(grid.x), np.array(grid.y))
+            dt = compute_dt(Q, grid, args.cfl, phi=_phi_cfl)
 
             # Additional CFL constraint from body velocity
             dx_min = float(abs(grid.x[1, 0] - grid.x[0, 0]))
