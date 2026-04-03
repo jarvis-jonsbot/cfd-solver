@@ -116,12 +116,13 @@ make typecheck     # mypy strict mode
 
 ## ⚠️ Definition of Done — Required Before Every Commit
 
-**All three of these must pass before you consider any task complete:**
+**All four of these must pass before you consider any task complete:**
 
 ```bash
 make lint          # must exit 0 — no ruff errors, no formatting issues
 make test          # must exit 0 — all tests passing
 make typecheck     # must exit 0 — no mypy errors
+make animate       # generate animation for PR (see below)
 ```
 
 If `make lint` fails:
@@ -156,9 +157,50 @@ Use [Conventional Commits](https://www.conventionalcommits.org/):
 
 Scope is optional: `feat(flux): add HLLC scheme`
 
+## 🎬 PR Animation (Required)
+
+Every PR that touches numerical code (flux, advection, pressure, FSI coupling) **must** include a flow animation in the PR description. This is a best practice — we have caught multiple bugs visually that passed all tests.
+
+### How to generate
+
+```bash
+make animate       # runs a short simulation and produces /tmp/cfd-anim.gif
+```
+
+Or manually:
+
+```bash
+# Run a representative simulation and save frames
+python scripts/run_cylinder.py --mach 0.5 --steps 400 --save-every 10 --output /tmp/anim-frames
+
+# Produce the GIF (requires pillow)
+python scripts/animate.py --input /tmp/anim-frames --output /tmp/cfd-anim.gif --fps 12
+```
+
+### Upload to PR
+
+1. Upload the GIF to a GitHub release (use `gh release create` or drag-and-drop on GitHub)
+2. Add to the PR description as:
+
+```markdown
+## 🎬 Visual Verification
+
+> Mach X cylinder flow, N steps, [method name] active. Density (left) and pressure (right).
+
+![Flow animation](https://github.com/jarvis-jonsbot/cfd-solver/releases/download/<tag>/cfd-anim.gif)
+```
+
+**What to look for:**
+- Smooth, symmetric pressure distribution (asymmetry = bug in boundary conditions or flux)
+- No checkerboard patterns (pressure-velocity decoupling)
+- No unphysical density values (ρ < 0 = major bug)
+- Shock structures that don't smear unexpectedly over time
+- For FSI: body motion that follows physical intuition (shock push = body moves downstream)
+
 ## Don't
 
 - Don't commit without running `make lint && make test` (see Definition of Done above)
+- Don't open a PR on numerical code without a flow animation in the description
 - Don't use bare `numpy` imports — always go through `backend.xp`
 - Don't divide by Jacobian in flux computation (use area-weighted normals directly)
 - Don't hardcode gamma=1.4 — use `gas.gamma`
