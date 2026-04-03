@@ -13,7 +13,7 @@ import numpy as np
 
 from src.advection import csl_advect, hybrid_advect
 from src.backend import xp
-from src.gas import GAMMA, primitive_to_conservative
+from src.gas import primitive_to_conservative
 from src.grid import generate_cartesian_grid
 from src.solver import compute_residual
 

@@ -456,7 +456,9 @@ def step_semi_implicit(Q, dt, grid: Grid, bcs=None):
     return Q_new
 
 
-def step_partitioned_fsi(Q, body, grid: Grid, gas, dt, fluid_integrator="rk4"):
+def step_partitioned_fsi(
+    Q, body, grid: Grid, gas, dt, fluid_integrator="rk4", use_csl=False, use_hybrid=False
+):
     """One partitioned FSI time step: fluid forces → body motion → fluid update.
 
     Partitioned (explicitly sequential) coupling:
@@ -473,7 +475,9 @@ def step_partitioned_fsi(Q, body, grid: Grid, gas, dt, fluid_integrator="rk4"):
         grid: Grid object (Cartesian)
         gas: gas module for EOS
         dt: time step
-        fluid_integrator: "rk4" or "semi_implicit"
+        fluid_integrator: "rk4" or "semi_implicit" (ignored if use_csl or use_hybrid is True)
+        use_csl: if True, use Conservative Semi-Lagrangian advection
+        use_hybrid: if True, use hybrid CSL/MUSCL with shock detection
 
     Returns:
         Q_new: updated fluid state, shape (4, ni, nj)
@@ -505,7 +509,17 @@ def step_partitioned_fsi(Q, body, grid: Grid, gas, dt, fluid_integrator="rk4"):
     Q = fill_ghost_cells(Q, phi_new, body_new, xc_np, yc_np, gas)
 
     # --- Step 5: Advance fluid ---
-    if fluid_integrator == "semi_implicit":
+    if use_hybrid:
+        # Hybrid CSL/MUSCL with shock detection
+        from src.advection import hybrid_advect
+
+        Q_new = hybrid_advect(Q, grid, dt, use_csl=True, phi=phi_new)
+    elif use_csl:
+        # Pure CSL advection with ghost cell masking
+        from src.advection import csl_advect
+
+        Q_new = csl_advect(Q, grid, dt, phi=phi_new)
+    elif fluid_integrator == "semi_implicit":
         Q_new = step_semi_implicit(Q, dt, grid)
     else:
         # Single RK4 step — pass phi_new so compute_residual can degrade MUSCL

@@ -157,7 +157,7 @@ def _interpolate_field(f, x_target, y_target, grid: Grid):
     return xp.array(f_interp_np)
 
 
-def conservative_correction(Q_sl, Q_old, grid: Grid, dt):
+def conservative_correction(Q_sl, Q_old, grid: Grid, dt, phi=None):
     """Apply conservative correction to restore global conservation.
 
     The semi-Lagrangian advection is not conservative: total mass, momentum,
@@ -176,6 +176,9 @@ def conservative_correction(Q_sl, Q_old, grid: Grid, dt):
         Q_old: state at time t^n, shape (4, ni, nj)
         grid: Grid object
         dt: time step
+        phi: optional level set, shape (ni, nj). phi < 0 inside body.
+             When provided, ghost cells are excluded from flux computation
+             and delta redistribution to prevent FSI blow-up.
 
     Returns:
         Q_csl: conservatively corrected state, shape (4, ni, nj)
@@ -183,13 +186,15 @@ def conservative_correction(Q_sl, Q_old, grid: Grid, dt):
     Notes:
         - Ensures sum(Q_csl) = sum(Q_old) for each conserved quantity
         - Preserves second-order accuracy of the SL step
+        - Ghost cells (phi < 0) are masked out to prevent spurious correction
+          from reflected velocities at immersed boundaries
     """
     ni, nj = grid.ni, grid.nj
 
     # --- Step 1: Compute "exact" advected state using flux integration ---
     # Use first-order upwind fluxes to get a conservative reference.
     # This gives us Q_flux ≈ Q_old - dt * div(F), which is exactly conservative.
-    Q_flux = _advect_first_order_flux(Q_old, grid, dt)
+    Q_flux = _advect_first_order_flux(Q_old, grid, dt, phi=phi)
 
     # --- Step 2: Compute per-cell discrepancy ---
     delta = Q_sl - Q_flux  # shape (4, ni, nj)
@@ -206,26 +211,64 @@ def conservative_correction(Q_sl, Q_old, grid: Grid, dt):
     delta_np = np.array(delta)
     Q_flux_np = np.array(Q_flux)
 
+    # Build fluid mask if phi is provided
+    fluid_mask = None
+    if phi is not None:
+        phi_np = np.array(phi)
+        fluid_mask = phi_np >= 0  # True for fluid cells, False for ghost cells
+
     # Apply a 3x3 averaging kernel to delta, then subtract from Q_flux
     # to get the corrected state. The kernel must sum to 1 to preserve global mass.
+    # When phi is provided, exclude ghost cells from the smoothing stencil.
     delta_smooth = np.zeros_like(delta_np)
     for eq in range(4):
         for i in range(ni):
             for j in range(nj):
+                # Skip ghost cells entirely
+                if fluid_mask is not None and not fluid_mask[i, j]:
+                    continue
+
                 # 5-point stencil: center + 4 neighbors
                 i_m = (i - 1) % ni
                 i_p = (i + 1) % ni
                 j_m = max(0, j - 1)
                 j_p = min(nj - 1, j + 1)
 
-                # Average with weights: center=0.5, each neighbor=0.125
-                delta_smooth[eq, i, j] = (
-                    0.5 * delta_np[eq, i, j]
-                    + 0.125 * delta_np[eq, i_m, j]
-                    + 0.125 * delta_np[eq, i_p, j]
-                    + 0.125 * delta_np[eq, i, j_m]
-                    + 0.125 * delta_np[eq, i, j_p]
-                )
+                # Collect weights and values only from fluid neighbors
+                weights = []
+                values = []
+
+                # Center (weight 0.5)
+                weights.append(0.5)
+                values.append(delta_np[eq, i, j])
+
+                # i-1 neighbor (weight 0.125 if fluid)
+                if fluid_mask is None or fluid_mask[i_m, j]:
+                    weights.append(0.125)
+                    values.append(delta_np[eq, i_m, j])
+
+                # i+1 neighbor
+                if fluid_mask is None or fluid_mask[i_p, j]:
+                    weights.append(0.125)
+                    values.append(delta_np[eq, i_p, j])
+
+                # j-1 neighbor
+                if fluid_mask is None or fluid_mask[i, j_m]:
+                    weights.append(0.125)
+                    values.append(delta_np[eq, i, j_m])
+
+                # j+1 neighbor
+                if fluid_mask is None or fluid_mask[i, j_p]:
+                    weights.append(0.125)
+                    values.append(delta_np[eq, i, j_p])
+
+                # Normalize weights to sum to 1
+                weights = np.array(weights)
+                values = np.array(values)
+                weights /= weights.sum()
+
+                # Weighted average
+                delta_smooth[eq, i, j] = np.sum(weights * values)
 
     # Corrected state: Q_csl = Q_flux + delta_smooth
     # This is conservative because sum(delta_smooth) ≈ sum(delta) (up to boundary effects)
@@ -234,13 +277,15 @@ def conservative_correction(Q_sl, Q_old, grid: Grid, dt):
     return xp.array(Q_csl)
 
 
-def _advect_first_order_flux(Q, grid: Grid, dt):
+def _advect_first_order_flux(Q, grid: Grid, dt, phi=None):
     """First-order conservative advection using upwind fluxes.
 
     Args:
         Q: conservative variables, shape (4, ni, nj)
         grid: Grid object
         dt: time step
+        phi: optional level set, shape (ni, nj). phi < 0 inside body.
+             When provided, ghost cells are excluded from flux computation.
 
     Returns:
         Q_new: advected state, shape (4, ni, nj)
@@ -262,11 +307,26 @@ def _advect_first_order_flux(Q, grid: Grid, dt):
     U_eta_np = np.array(U_eta_area)
     J_np = np.array(J_abs)
 
+    # Build fluid mask if phi is provided
+    fluid_mask = None
+    if phi is not None:
+        phi_np = np.array(phi)
+        fluid_mask = phi_np >= 0  # True for fluid cells
+
     # ξ-direction sweep (periodic)
     for i in range(ni):
         i_m = (i - 1) % ni
         i_p = (i + 1) % ni
         for j in range(nj):
+            # Skip ghost cells — they should not evolve via flux integration
+            if fluid_mask is not None and not fluid_mask[i, j]:
+                continue
+
+            # Skip flux computation if any neighbor is a ghost cell
+            # (treat ghost cell faces as zero-flux boundaries)
+            if fluid_mask is not None and (not fluid_mask[i_m, j] or not fluid_mask[i_p, j]):
+                continue
+
             Uxi_p = 0.5 * (U_xi_np[i, j] + U_xi_np[i_p, j])
             Uxi_m = 0.5 * (U_xi_np[i_m, j] + U_xi_np[i, j])
             Jk = J_np[i, j]
@@ -279,8 +339,17 @@ def _advect_first_order_flux(Q, grid: Grid, dt):
     # η-direction sweep (clamped)
     for i in range(ni):
         for j in range(nj):
+            # Skip ghost cells
+            if fluid_mask is not None and not fluid_mask[i, j]:
+                continue
+
             j_m = max(0, j - 1)
             j_p = min(nj - 1, j + 1)
+
+            # Skip flux computation if any neighbor is a ghost cell
+            if fluid_mask is not None and (not fluid_mask[i, j_m] or not fluid_mask[i, j_p]):
+                continue
+
             Ueta_p = 0.5 * (U_eta_np[i, j] + U_eta_np[i, j_p])
             Ueta_m = 0.5 * (U_eta_np[i, j_m] + U_eta_np[i, j])
             Jk = J_np[i, j]
@@ -293,7 +362,7 @@ def _advect_first_order_flux(Q, grid: Grid, dt):
     return xp.array(Q_new_np)
 
 
-def csl_advect(Q, grid: Grid, dt):
+def csl_advect(Q, grid: Grid, dt, phi=None):
     """Conservative Semi-Lagrangian advection: SL + conservative correction.
 
     Combines the high-order accuracy of semi-Lagrangian advection with exact
@@ -303,6 +372,8 @@ def csl_advect(Q, grid: Grid, dt):
         Q: conservative variables at t^n, shape (4, ni, nj)
         grid: Grid object
         dt: time step
+        phi: optional level set, shape (ni, nj). phi < 0 inside body.
+             When provided, ghost cells are excluded from conservative correction.
 
     Returns:
         Q_new: advected state at t^{n+1}, shape (4, ni, nj)
@@ -311,17 +382,18 @@ def csl_advect(Q, grid: Grid, dt):
         - Preserves global mass, momentum, and energy to machine precision
         - Stable at CFL > 1 (tested up to CFL ~ 5)
         - Second-order accurate in space and time
+        - Ghost cells (phi < 0) are masked to prevent FSI blow-up
     """
     # Step 1: Semi-Lagrangian advection (non-conservative)
     Q_sl = sl_advect(Q, grid, dt)
 
-    # Step 2: Conservative correction
-    Q_csl = conservative_correction(Q_sl, Q, grid, dt)
+    # Step 2: Conservative correction (with ghost cell masking if phi provided)
+    Q_csl = conservative_correction(Q_sl, Q, grid, dt, phi=phi)
 
     return Q_csl
 
 
-def hybrid_advect(Q, grid: Grid, dt, use_csl: bool = True):
+def hybrid_advect(Q, grid: Grid, dt, use_csl: bool = True, phi=None):
     """Hybrid CSL/MUSCL advection with shock detection.
 
     Uses a normalized pressure gradient sensor to detect shocks. In smooth
@@ -333,6 +405,8 @@ def hybrid_advect(Q, grid: Grid, dt, use_csl: bool = True):
         grid: Grid object
         dt: time step
         use_csl: if True, use CSL in smooth regions; if False, use MUSCL everywhere
+        phi: optional level set, shape (ni, nj). phi < 0 inside body.
+             When provided, ghost cells are excluded from CSL conservative correction.
 
     Returns:
         Q_new: advected state, shape (4, ni, nj)
@@ -341,6 +415,7 @@ def hybrid_advect(Q, grid: Grid, dt, use_csl: bool = True):
         - Shock sensor: s = |∇p| / (|p| + p_ref), s > 0.1 triggers MUSCL
         - Provides shock-capturing in discontinuous regions while maintaining
           stability at high CFL in smooth regions
+        - Ghost cells (phi < 0) are masked in CSL to prevent FSI blow-up
     """
     if not use_csl:
         # Pure MUSCL+Roe (baseline)
@@ -365,23 +440,23 @@ def hybrid_advect(Q, grid: Grid, dt, use_csl: bool = True):
 
     # If all cells are smooth, use pure CSL
     if not np.any(shock_mask):
-        return csl_advect(Q, grid, dt)
+        return csl_advect(Q, grid, dt, phi=phi)
 
     # If all cells are shocks, use pure MUSCL
     if np.all(shock_mask):
         from src.solver import compute_residual
 
-        R = compute_residual(Q, grid)
+        R = compute_residual(Q, grid, phi=phi)
         return Q - dt * R
 
     # --- Step 3: Hybrid advection ---
     # For simplicity, use CSL everywhere, then blend with MUSCL in shock regions.
     # This avoids complex stencil handling at the interface between methods.
-    Q_csl = csl_advect(Q, grid, dt)
+    Q_csl = csl_advect(Q, grid, dt, phi=phi)
 
     from src.solver import compute_residual
 
-    Q_muscl = Q - dt * compute_residual(Q, grid)
+    Q_muscl = Q - dt * compute_residual(Q, grid, phi=phi)
 
     # Blend using shock sensor as weight: Q_hybrid = (1-α)*Q_csl + α*Q_muscl
     # where α = smooth_step(sensor, threshold - 0.05, threshold + 0.05)

@@ -222,7 +222,16 @@ def main():
                 dt = min(dt, dt_body)
 
             # Partitioned FSI step
-            Q, body = step_partitioned_fsi(Q, body, grid, gas, dt, fluid_integrator="rk4")
+            Q, body = step_partitioned_fsi(
+                Q,
+                body,
+                grid,
+                gas,
+                dt,
+                fluid_integrator="rk4",
+                use_csl=args.csl,
+                use_hybrid=args.hybrid,
+            )
             t += dt
 
             # Record trajectory
