@@ -32,6 +32,8 @@ class SolverConfig:
     print_interval: int = 100
     output_interval: int = 1000
     output_dir: str = "output"
+    use_csl: bool = False  # use Conservative Semi-Lagrangian advection
+    use_hybrid: bool = False  # use hybrid CSL/MUSCL with shock detection
 
 
 def compute_dt(Q, grid: Grid, cfl: float, phi=None) -> float:
@@ -198,8 +200,8 @@ def compute_residual(Q, grid: Grid, phi=None) -> object:
             E_ambient = rho_ambient / 0.4  # p=rho*(gamma-1)*E/rho, p≈rho for M~1
             Q_safe = Q_np.copy()
             Q_safe[0, ghost_mask] = rho_ambient
-            Q_safe[1, ghost_mask] = 0.0   # zero x-momentum
-            Q_safe[2, ghost_mask] = 0.0   # zero y-momentum
+            Q_safe[1, ghost_mask] = 0.0  # zero x-momentum
+            Q_safe[2, ghost_mask] = 0.0  # zero y-momentum
             Q_safe[3, ghost_mask] = E_ambient
             Q_xp = xp.array(Q_safe)
         else:
@@ -531,7 +533,7 @@ def step_partitioned_fsi(Q, body, grid: Grid, gas, dt, fluid_integrator="rk4"):
 
 
 def solve(Q0, grid: Grid, config: SolverConfig, callback: Callable | None = None) -> object:
-    """Run the solver with RK4 time integration.
+    """Run the solver with RK4 time integration or CSL advection.
 
     Args:
         Q0: initial conservative state, shape (4, ni, nj)
@@ -545,6 +547,10 @@ def solve(Q0, grid: Grid, config: SolverConfig, callback: Callable | None = None
     Q = xp.array(Q0)
     t = 0.0
 
+    # Import CSL advection if needed
+    if config.use_csl or config.use_hybrid:
+        from src.advection import csl_advect, hybrid_advect
+
     for step in range(1, config.max_steps + 1):
         # Apply boundary conditions
         apply_wall(Q, grid)
@@ -553,25 +559,34 @@ def solve(Q0, grid: Grid, config: SolverConfig, callback: Callable | None = None
         # Compute stable time step
         dt = compute_dt(Q, grid, config.cfl)
 
-        # RK4 stages
-        k1 = compute_residual(Q, grid)
-        Q1 = Q + 0.5 * dt * k1
-        apply_wall(Q1, grid)
-        apply_freestream(Q1, grid, config.mach, config.alpha, config.p_inf, config.rho_inf)
+        # Choose advection method
+        if config.use_hybrid:
+            # Hybrid CSL/MUSCL with shock detection
+            Q = hybrid_advect(Q, grid, dt, use_csl=True)
+        elif config.use_csl:
+            # Pure CSL advection
+            Q = csl_advect(Q, grid, dt)
+        else:
+            # Standard RK4 with MUSCL+Roe
+            k1 = compute_residual(Q, grid)
+            Q1 = Q + 0.5 * dt * k1
+            apply_wall(Q1, grid)
+            apply_freestream(Q1, grid, config.mach, config.alpha, config.p_inf, config.rho_inf)
 
-        k2 = compute_residual(Q1, grid)
-        Q2 = Q + 0.5 * dt * k2
-        apply_wall(Q2, grid)
-        apply_freestream(Q2, grid, config.mach, config.alpha, config.p_inf, config.rho_inf)
+            k2 = compute_residual(Q1, grid)
+            Q2 = Q + 0.5 * dt * k2
+            apply_wall(Q2, grid)
+            apply_freestream(Q2, grid, config.mach, config.alpha, config.p_inf, config.rho_inf)
 
-        k3 = compute_residual(Q2, grid)
-        Q3 = Q + dt * k3
-        apply_wall(Q3, grid)
-        apply_freestream(Q3, grid, config.mach, config.alpha, config.p_inf, config.rho_inf)
+            k3 = compute_residual(Q2, grid)
+            Q3 = Q + dt * k3
+            apply_wall(Q3, grid)
+            apply_freestream(Q3, grid, config.mach, config.alpha, config.p_inf, config.rho_inf)
 
-        k4 = compute_residual(Q3, grid)
+            k4 = compute_residual(Q3, grid)
 
-        Q = Q + (dt / 6.0) * (k1 + 2.0 * k2 + 2.0 * k3 + k4)
+            Q = Q + (dt / 6.0) * (k1 + 2.0 * k2 + 2.0 * k3 + k4)
+
         t += dt
 
         if step % config.print_interval == 0:
@@ -580,8 +595,9 @@ def solve(Q0, grid: Grid, config: SolverConfig, callback: Callable | None = None
             rho_max = float(xp.max(Q[0, :, 1:-1]))
             p_min = float(xp.min(p[:, 1:-1]))
             p_max = float(xp.max(p[:, 1:-1]))
+            mode = "HYBRID" if config.use_hybrid else ("CSL" if config.use_csl else "RK4")
             print(
-                f"Step {step:6d}  t={t:.6f}  dt={dt:.2e}  "
+                f"[{mode}] Step {step:6d}  t={t:.6f}  dt={dt:.2e}  "
                 f"rho=[{rho_min:.4f}, {rho_max:.4f}]  "
                 f"p=[{p_min:.4f}, {p_max:.4f}]"
             )

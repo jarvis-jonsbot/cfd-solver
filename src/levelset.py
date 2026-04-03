@@ -217,13 +217,12 @@ def fill_ghost_cells(
                 # Only interpolate from fluid cells (phi > 0 at mirror)
                 Q_mirror = _bilinear_interp(Q_np, xm, ym, xc_np, yc_np)
 
-                rho_m = max(Q_mirror[0], 1e-6)  # guard against negative density
+                rho_m_val = Q_mirror[0]
+                rho_m = rho_m_val if rho_m_val > 1e-6 else 1e-6
                 u_m = Q_mirror[1] / rho_m
                 v_m = Q_mirror[2] / rho_m
-                p_m = max(
-                    (gas.GAMMA - 1.0) * (Q_mirror[3] - 0.5 * rho_m * (u_m**2 + v_m**2)),
-                    1e-6,
-                )
+                p_m_val = (gas.GAMMA - 1.0) * (Q_mirror[3] - 0.5 * rho_m * (u_m**2 + v_m**2))
+                p_m = p_m_val if p_m_val > 1e-6 else 1e-6
 
                 # Reflect velocity: ghost = 2*v_body - v_mirror
                 u_ghost = 2.0 * v_body[0] - u_m
@@ -365,10 +364,10 @@ def compute_interface_forces(
                 # Outward normal from body (pointing into fluid = phi>0 side)
                 if phi_np[i + 1, j] > 0:  # fluid is to the right
                     nx_face, ny_face = 1.0, 0.0  # normal points right (into fluid)
-                    p_face = p[i + 1, j]   # fluid pressure only
+                    p_face = p[i + 1, j]  # fluid pressure only
                 else:
                     nx_face, ny_face = -1.0, 0.0  # normal points left (into fluid)
-                    p_face = p[i, j]       # fluid pressure only
+                    p_face = p[i, j]  # fluid pressure only
                 dA = dy  # x-face has area dy
                 x_face = 0.5 * (xc_np[i, j] + xc_np[i + 1, j])
                 y_face = 0.5 * (yc_np[i, j] + yc_np[i + 1, j])
@@ -384,10 +383,10 @@ def compute_interface_forces(
             if phi_np[i, j] * phi_np[i, j + 1] < 0:
                 if phi_np[i, j + 1] > 0:
                     nx_face, ny_face = 0.0, 1.0
-                    p_face = p[i, j + 1]   # fluid side
+                    p_face = p[i, j + 1]  # fluid side
                 else:
                     nx_face, ny_face = 0.0, -1.0
-                    p_face = p[i, j]       # fluid side
+                    p_face = p[i, j]  # fluid side
                 dA = dx
                 x_face = 0.5 * (xc_np[i, j] + xc_np[i, j + 1])
                 y_face = 0.5 * (yc_np[i, j] + yc_np[i, j + 1])

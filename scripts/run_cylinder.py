@@ -52,6 +52,16 @@ def main():
         action="store_true",
         help="Use rigid body FSI mode (Mach 3 shock hit, free cylinder)",
     )
+    parser.add_argument(
+        "--csl",
+        action="store_true",
+        help="Use Conservative Semi-Lagrangian advection (stable at high CFL)",
+    )
+    parser.add_argument(
+        "--hybrid",
+        action="store_true",
+        help="Use hybrid CSL/MUSCL advection with shock detection",
+    )
     args = parser.parse_args()
 
     alpha_rad = args.alpha * xp.pi / 180.0
@@ -69,6 +79,10 @@ def main():
     print(f"Max steps: {args.steps}")
     if args.rigid_body:
         print("[Rigid Body FSI Mode] Free cylinder, shock hit at Mach 3")
+    if args.hybrid:
+        print("[Hybrid CSL/MUSCL] Shock-adaptive advection with high-CFL stability")
+    elif args.csl:
+        print("[CSL Advection] Conservative Semi-Lagrangian (stable at high CFL)")
     print()
 
     # Generate grid
@@ -110,6 +124,8 @@ def main():
         print_interval=args.print_every,
         output_interval=args.save_every,
         output_dir=args.output,
+        use_csl=args.csl,
+        use_hybrid=args.hybrid,
     )
 
     # Callback for periodic saves
