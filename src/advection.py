@@ -19,7 +19,7 @@ from src.gas import pressure
 from src.grid import Grid
 
 
-def sl_advect(Q, grid: Grid, dt):
+def sl_advect(Q, grid: Grid, dt, phi=None):
     """Semi-Lagrangian advection of conservative variables using RK2 backtracing.
 
     Traces characteristics backward in time using the midpoint rule (RK2):
@@ -32,6 +32,11 @@ def sl_advect(Q, grid: Grid, dt):
         Q: conservative variables, shape (4, ni, nj) — [rho, rho*u, rho*v, rho*E]
         grid: Grid object with physical coordinates (x, y)
         dt: time step
+        phi: optional level set, shape (ni, nj). phi < 0 inside body.
+             When provided, ghost cells are excluded from the IDW interpolation
+             stencil. This prevents reflected velocities in ghost cells from
+             contaminating the SL foot-point interpolation for adjacent fluid cells,
+             which otherwise breaks y-symmetry of the flow field.
 
     Returns:
         Q_sl: advected conservative variables, shape (4, ni, nj)
@@ -55,9 +60,9 @@ def sl_advect(Q, grid: Grid, dt):
     x_mid = x - 0.5 * dt * u
     y_mid = y - 0.5 * dt * v
 
-    # Interpolate velocity at midpoint
-    u_mid = _interpolate_field(u, x_mid, y_mid, grid)
-    v_mid = _interpolate_field(v, x_mid, y_mid, grid)
+    # Interpolate velocity at midpoint (exclude ghost cells from stencil)
+    u_mid = _interpolate_field(u, x_mid, y_mid, grid, phi=phi)
+    v_mid = _interpolate_field(v, x_mid, y_mid, grid, phi=phi)
 
     # Step 2: Full step using midpoint velocity
     x_foot = x - dt * u_mid
@@ -66,12 +71,12 @@ def sl_advect(Q, grid: Grid, dt):
     # --- Interpolate all conservative variables at foot points ---
     Q_sl = xp.zeros_like(Q)
     for eq in range(4):
-        Q_sl[eq] = _interpolate_field(Q[eq], x_foot, y_foot, grid)
+        Q_sl[eq] = _interpolate_field(Q[eq], x_foot, y_foot, grid, phi=phi)
 
     return Q_sl
 
 
-def _interpolate_field(f, x_target, y_target, grid: Grid):
+def _interpolate_field(f, x_target, y_target, grid: Grid, phi=None):
     """Bilinear interpolation of field f at target physical coordinates (x, y).
 
     Args:
@@ -79,6 +84,11 @@ def _interpolate_field(f, x_target, y_target, grid: Grid):
         x_target: target x-coordinates, shape (ni, nj)
         y_target: target y-coordinates, shape (ni, nj)
         grid: Grid object
+        phi: optional level set, shape (ni, nj). When provided, ghost cells
+             (phi < 0) are excluded from the IDW stencil. If all 4 stencil
+             points are ghost cells, falls back to using all 4 (unavoidable
+             deep interior case, but this is handled by ghost cell masking
+             in csl_advect).
 
     Returns:
         f_interp: interpolated field, shape (ni, nj)
@@ -86,18 +96,11 @@ def _interpolate_field(f, x_target, y_target, grid: Grid):
     Notes:
         - Periodic in ξ (i) direction
         - Clamped in η (j) direction
-        - Uses bilinear interpolation in physical space
+        - Uses inverse-distance weighting with the 4 nearest neighbors
+        - On uniform Cartesian grids this reduces to bilinear interpolation
+          when all 4 stencil points are in the fluid
     """
     ni, nj = grid.ni, grid.nj
-
-    # For simplicity on curvilinear grids, we use inverse distance weighting
-    # with the 4 nearest neighbors in index space. On uniform Cartesian grids
-    # this reduces to exact bilinear interpolation.
-    #
-    # For each target point (x_target[i,j], y_target[i,j]), we:
-    #   1. Find the cell that contains it (or nearest cell if outside)
-    #   2. Compute inverse-distance weights to the 4 corners
-    #   3. Interpolate f using these weights
 
     import numpy as np
 
@@ -107,11 +110,10 @@ def _interpolate_field(f, x_target, y_target, grid: Grid):
     f_np = np.array(f)
     x_tgt_np = np.array(x_target)
     y_tgt_np = np.array(y_target)
+    phi_np = np.array(phi) if phi is not None else None
 
     f_interp_np = np.zeros_like(f_np)
 
-    # For each cell, find the containing cell by brute-force distance search
-    # (this is simple but O(n²) — acceptable for moderate grid sizes)
     for i in range(ni):
         for j in range(nj):
             x_tgt = x_tgt_np[i, j]
@@ -135,6 +137,22 @@ def _interpolate_field(f, x_target, y_target, grid: Grid):
                 min(nj - 1, j0 + 1),
                 min(nj - 1, j0 + 1),
             ]
+
+            # Filter out ghost cells from the stencil when phi is provided.
+            # Ghost cells carry reflected velocities — including them in the
+            # IDW stencil contaminates fluid cells adjacent to the interface
+            # and breaks the y-symmetry of symmetric flow problems.
+            if phi_np is not None:
+                fluid_stencil = [
+                    (ii, jj)
+                    for ii, jj in zip(i_stencil, j_stencil)
+                    if phi_np[ii, jj] >= 0.0
+                ]
+                if fluid_stencil:
+                    i_stencil = [s[0] for s in fluid_stencil]
+                    j_stencil = [s[1] for s in fluid_stencil]
+                # else: all stencil points are ghost (deep interior) — use all 4,
+                # conservative_correction will mask the result anyway
 
             # Inverse distance weighting
             weights = []
@@ -417,7 +435,9 @@ def csl_advect(Q, grid: Grid, dt, phi=None):
         - Ghost cells (phi < 0) are masked to prevent FSI blow-up
     """
     # Step 1: Semi-Lagrangian advection (non-conservative)
-    Q_sl = sl_advect(Q, grid, dt)
+    # Pass phi so ghost cells are excluded from the IDW stencil — prevents
+    # reflected ghost-cell velocities from breaking flow symmetry.
+    Q_sl = sl_advect(Q, grid, dt, phi=phi)
 
     # Step 2: Conservative correction (with ghost cell masking if phi provided)
     Q_csl = conservative_correction(Q_sl, Q, grid, dt, phi=phi)
