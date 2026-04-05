@@ -145,11 +145,11 @@ def main():
         # Create a free circular cylinder at origin.
         # Density must be much larger than the fluid (rho_fluid ~ 1–4 in non-dim units)
         # so the body isn't launched at unphysical acceleration.
-        # A solid aluminium-like cylinder in air at Mach 3 has density ratio ~2700.
-        # We use density=100 here (100× freestream) as a physically reasonable
-        # intermediate value that keeps the simulation well-behaved while still
-        # showing visible body motion during the simulation window.
-        body = make_circle(center=np.array([0.0, 0.0]), radius=0.5, density=100.0)
+        # density=25 gives mass ≈ 19.6 (non-dim), a_peak ≈ 0.48 units/t².
+        # Body travels ~2.5 units over 200 steps — visible motion, stays well
+        # inside the 20×10 domain, and mirror-point interpolation remains valid.
+        # (density=100 showed negligible motion; density=10 exits the domain too fast.)
+        body = make_circle(center=np.array([0.0, 0.0]), radius=0.5, density=25.0)
 
         # Manual time loop for FSI
         Q = Q0.copy()
@@ -198,7 +198,8 @@ def main():
         from src.levelset import fill_ghost_cells as _fgc_init
 
         _phi0 = _cl_init(body, _np_init.array(grid.x), _np_init.array(grid.y))
-        Q = _fgc_init(Q, _phi0, body, _np_init.array(grid.x), _np_init.array(grid.y), gas)
+        Q = _fgc_init(Q, _phi0, body, _np_init.array(grid.x), _np_init.array(grid.y), gas,
+                      rho_inf=1.0, p_inf=1.0)
 
         for step in range(1, args.steps + 1):
             # Compute time step from fluid CFL
@@ -222,6 +223,8 @@ def main():
                 dt = min(dt, dt_body)
 
             # Partitioned FSI step
+            # Pass pre-shock freestream values so deep ghost cells inside the body
+            # are seeded with p_inf=1.0, rho_inf=1.0, not the post-shock state.
             Q, body = step_partitioned_fsi(
                 Q,
                 body,
@@ -231,6 +234,8 @@ def main():
                 fluid_integrator="rk4",
                 use_csl=args.csl,
                 use_hybrid=args.hybrid,
+                rho_inf=1.0,
+                p_inf=1.0,
             )
             t += dt
 

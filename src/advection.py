@@ -270,8 +270,31 @@ def conservative_correction(Q_sl, Q_old, grid: Grid, dt, phi=None):
                 # Weighted average
                 delta_smooth[eq, i, j] = np.sum(weights * values)
 
+    # Global conservation rescaling: the local smoothing kernel changes the sum of
+    # delta (renormalization at boundary/ghost-adjacent cells shifts total weight).
+    # Correct this by rescaling delta_smooth so its fluid-cell sum matches the
+    # original delta sum exactly — this restores the conservation guarantee.
+    for eq in range(4):
+        if fluid_mask is not None:
+            sum_delta = np.sum(delta_np[eq][fluid_mask])
+            sum_smooth = np.sum(delta_smooth[eq][fluid_mask])
+        else:
+            sum_delta = np.sum(delta_np[eq])
+            sum_smooth = np.sum(delta_smooth[eq])
+
+        if abs(sum_smooth) > 1e-14:
+            delta_smooth[eq] *= sum_delta / sum_smooth
+        elif abs(sum_delta) > 1e-14:
+            # Smoothed delta collapsed to zero but original wasn't — distribute uniformly
+            if fluid_mask is not None:
+                n_fluid = np.sum(fluid_mask)
+                if n_fluid > 0:
+                    delta_smooth[eq][fluid_mask] += sum_delta / n_fluid
+            else:
+                delta_smooth[eq] += sum_delta / delta_smooth[eq].size
+
     # Corrected state: Q_csl = Q_flux + delta_smooth
-    # This is conservative because sum(delta_smooth) ≈ sum(delta) (up to boundary effects)
+    # sum(Q_csl[fluid]) == sum(Q_flux[fluid]) + sum(delta[fluid]) == sum(Q_old[fluid])
     Q_csl = Q_flux_np + delta_smooth
 
     return xp.array(Q_csl)
@@ -322,18 +345,23 @@ def _advect_first_order_flux(Q, grid: Grid, dt, phi=None):
             if fluid_mask is not None and not fluid_mask[i, j]:
                 continue
 
-            # Skip flux computation if any neighbor is a ghost cell
-            # (treat ghost cell faces as zero-flux boundaries)
-            if fluid_mask is not None and (not fluid_mask[i_m, j] or not fluid_mask[i_p, j]):
-                continue
-
-            Uxi_p = 0.5 * (U_xi_np[i, j] + U_xi_np[i_p, j])
-            Uxi_m = 0.5 * (U_xi_np[i_m, j] + U_xi_np[i, j])
             Jk = J_np[i, j]
-
             for eq in range(4):
-                F_p = Uxi_p * Q_np[eq, i, j] if Uxi_p > 0 else Uxi_p * Q_np[eq, i_p, j]
-                F_m = Uxi_m * Q_np[eq, i_m, j] if Uxi_m > 0 else Uxi_m * Q_np[eq, i, j]
+                # Ghost-adjacent faces: treat as zero-flux (no-penetration wall).
+                # Do NOT skip the entire cell — that inflates delta near the body.
+                if fluid_mask is not None and not fluid_mask[i_p, j]:
+                    Uxi_p = 0.0
+                    F_p = 0.0
+                else:
+                    Uxi_p = 0.5 * (U_xi_np[i, j] + U_xi_np[i_p, j])
+                    F_p = Uxi_p * Q_np[eq, i, j] if Uxi_p > 0 else Uxi_p * Q_np[eq, i_p, j]
+
+                if fluid_mask is not None and not fluid_mask[i_m, j]:
+                    F_m = 0.0
+                else:
+                    Uxi_m = 0.5 * (U_xi_np[i_m, j] + U_xi_np[i, j])
+                    F_m = Uxi_m * Q_np[eq, i_m, j] if Uxi_m > 0 else Uxi_m * Q_np[eq, i, j]
+
                 Q_new_np[eq, i, j] -= dt / Jk * (F_p - F_m)
 
     # η-direction sweep (clamped)
@@ -345,18 +373,22 @@ def _advect_first_order_flux(Q, grid: Grid, dt, phi=None):
 
             j_m = max(0, j - 1)
             j_p = min(nj - 1, j + 1)
-
-            # Skip flux computation if any neighbor is a ghost cell
-            if fluid_mask is not None and (not fluid_mask[i, j_m] or not fluid_mask[i, j_p]):
-                continue
-
-            Ueta_p = 0.5 * (U_eta_np[i, j] + U_eta_np[i, j_p])
-            Ueta_m = 0.5 * (U_eta_np[i, j_m] + U_eta_np[i, j])
             Jk = J_np[i, j]
 
             for eq in range(4):
-                F_p = Ueta_p * Q_np[eq, i, j] if Ueta_p > 0 else Ueta_p * Q_np[eq, i, j_p]
-                F_m = Ueta_m * Q_np[eq, i, j_m] if Ueta_m > 0 else Ueta_m * Q_np[eq, i, j]
+                # Ghost-adjacent faces: treat as zero-flux (no-penetration wall).
+                if fluid_mask is not None and not fluid_mask[i, j_p]:
+                    F_p = 0.0
+                else:
+                    Ueta_p = 0.5 * (U_eta_np[i, j] + U_eta_np[i, j_p])
+                    F_p = Ueta_p * Q_np[eq, i, j] if Ueta_p > 0 else Ueta_p * Q_np[eq, i, j_p]
+
+                if fluid_mask is not None and not fluid_mask[i, j_m]:
+                    F_m = 0.0
+                else:
+                    Ueta_m = 0.5 * (U_eta_np[i, j_m] + U_eta_np[i, j])
+                    F_m = Ueta_m * Q_np[eq, i, j_m] if Ueta_m > 0 else Ueta_m * Q_np[eq, i, j]
+
                 Q_new_np[eq, i, j] -= dt / Jk * (F_p - F_m)
 
     return xp.array(Q_new_np)

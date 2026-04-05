@@ -457,7 +457,16 @@ def step_semi_implicit(Q, dt, grid: Grid, bcs=None):
 
 
 def step_partitioned_fsi(
-    Q, body, grid: Grid, gas, dt, fluid_integrator="rk4", use_csl=False, use_hybrid=False
+    Q,
+    body,
+    grid: Grid,
+    gas,
+    dt,
+    fluid_integrator="rk4",
+    use_csl=False,
+    use_hybrid=False,
+    rho_inf: float = 1.0,
+    p_inf: float = 1.0,
 ):
     """One partitioned FSI time step: fluid forces → body motion → fluid update.
 
@@ -478,6 +487,8 @@ def step_partitioned_fsi(
         fluid_integrator: "rk4" or "semi_implicit" (ignored if use_csl or use_hybrid is True)
         use_csl: if True, use Conservative Semi-Lagrangian advection
         use_hybrid: if True, use hybrid CSL/MUSCL with shock detection
+        rho_inf: freestream density, used to seed deep ghost cells (default 1.0)
+        p_inf: freestream pressure, used to seed deep ghost cells (default 1.0)
 
     Returns:
         Q_new: updated fluid state, shape (4, ni, nj)
@@ -496,7 +507,7 @@ def step_partitioned_fsi(
 
     # --- Step 1: Compute phi, fill ghost cells ---
     phi = compute_levelset(body, xc_np, yc_np)
-    Q = fill_ghost_cells(Q, phi, body, xc_np, yc_np, gas)
+    Q = fill_ghost_cells(Q, phi, body, xc_np, yc_np, gas, rho_inf=rho_inf, p_inf=p_inf)
 
     # --- Step 2: Compute forces on body ---
     F, tau = compute_interface_forces(Q, phi, body, xc_np, yc_np, gas)
@@ -506,7 +517,7 @@ def step_partitioned_fsi(
 
     # --- Step 4: Recompute phi at new position, refill ghost cells ---
     phi_new = compute_levelset(body_new, xc_np, yc_np)
-    Q = fill_ghost_cells(Q, phi_new, body_new, xc_np, yc_np, gas)
+    Q = fill_ghost_cells(Q, phi_new, body_new, xc_np, yc_np, gas, rho_inf=rho_inf, p_inf=p_inf)
 
     # --- Step 5: Advance fluid ---
     if use_hybrid:
@@ -527,21 +538,21 @@ def step_partitioned_fsi(
         # from the large velocity jump across the immersed boundary).
         k1 = compute_residual(Q, grid, phi=phi_new)
         Q1 = Q + 0.5 * dt * k1
-        Q1 = fill_ghost_cells(Q1, phi_new, body_new, xc_np, yc_np, gas)
+        Q1 = fill_ghost_cells(Q1, phi_new, body_new, xc_np, yc_np, gas, rho_inf=rho_inf, p_inf=p_inf)
 
         k2 = compute_residual(Q1, grid, phi=phi_new)
         Q2 = Q + 0.5 * dt * k2
-        Q2 = fill_ghost_cells(Q2, phi_new, body_new, xc_np, yc_np, gas)
+        Q2 = fill_ghost_cells(Q2, phi_new, body_new, xc_np, yc_np, gas, rho_inf=rho_inf, p_inf=p_inf)
 
         k3 = compute_residual(Q2, grid, phi=phi_new)
         Q3 = Q + dt * k3
-        Q3 = fill_ghost_cells(Q3, phi_new, body_new, xc_np, yc_np, gas)
+        Q3 = fill_ghost_cells(Q3, phi_new, body_new, xc_np, yc_np, gas, rho_inf=rho_inf, p_inf=p_inf)
 
         k4 = compute_residual(Q3, grid, phi=phi_new)
         Q_new = Q + (dt / 6.0) * (k1 + 2.0 * k2 + 2.0 * k3 + k4)
 
     # Final ghost cell fill
-    Q_new = fill_ghost_cells(Q_new, phi_new, body_new, xc_np, yc_np, gas)
+    Q_new = fill_ghost_cells(Q_new, phi_new, body_new, xc_np, yc_np, gas, rho_inf=rho_inf, p_inf=p_inf)
 
     return Q_new, body_new
 

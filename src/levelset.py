@@ -134,12 +134,16 @@ def fill_ghost_cells(
     xc: np.ndarray,
     yc: np.ndarray,
     gas,
+    rho_inf: float = 1.0,
+    p_inf: float = 1.0,
 ) -> np.ndarray:
     """Fill ghost cells (phi < 0) with reflected state for no-penetration BC.
 
     For each ghost cell G at (i, j):
     1. Find mirror point M across the interface (project along grad(phi))
-    2. Interpolate fluid state at M
+    2. Interpolate fluid state at M — only if mirror lands in a fluid cell (phi > 0).
+       If the mirror falls in a ghost region (body moved far or deep interior),
+       fall back to ambient (rho_inf, p_inf) + body surface velocity.
     3. Set ghost pressure/density = interpolated (mirror)
     4. Set ghost velocity = 2*v_body - v_fluid_mirror (reflect normal, match tangential)
 
@@ -149,6 +153,8 @@ def fill_ghost_cells(
         body: RigidBody object
         xc, yc: cell centers, shape (ni, nj)
         gas: gas module (for EOS)
+        rho_inf: freestream density (used for deep ghost / fallback; default 1.0)
+        p_inf: freestream pressure (used for deep ghost / fallback; default 1.0)
 
     Returns:
         Q_new: updated conservative variables with ghost cells filled
@@ -205,7 +211,7 @@ def fill_ghost_cells(
             v_body = body.surface_velocity(np.array([xg, yg]))
 
             if -band <= phi_ij < 0.0:
-                # Near-interface ghost cell: mirror reflection
+                # Near-interface ghost cell: mirror reflection across interface.
                 d = abs(phi_ij)
                 xm = xg + 2.0 * d * n_x[i, j]
                 ym = yg + 2.0 * d * n_y[i, j]
@@ -214,15 +220,26 @@ def fill_ghost_cells(
                 xm = np.clip(xm, float(xc_np[0, 0]), float(xc_np[-1, 0]))
                 ym = np.clip(ym, float(yc_np[0, 0]), float(yc_np[0, -1]))
 
-                # Only interpolate from fluid cells (phi > 0 at mirror)
-                Q_mirror = _bilinear_interp(Q_np, xm, ym, xc_np, yc_np)
-
-                rho_m_val = Q_mirror[0]
-                rho_m = rho_m_val if rho_m_val > 1e-6 else 1e-6
-                u_m = Q_mirror[1] / rho_m
-                v_m = Q_mirror[2] / rho_m
-                p_m_val = (gas.GAMMA - 1.0) * (Q_mirror[3] - 0.5 * rho_m * (u_m**2 + v_m**2))
-                p_m = p_m_val if p_m_val > 1e-6 else 1e-6
+                # Check that mirror point is actually in a fluid cell.
+                # If the body has moved such that the mirror lands in another ghost
+                # region (phi_mirror < 0), fall back to freestream thermodynamics +
+                # body surface velocity — do NOT interpolate from ghost cell values
+                # (they carry reflected velocities that corrupt the fill).
+                phi_at_mirror = _interp_scalar(phi_np, xm, ym, xc_np, yc_np)
+                if phi_at_mirror > 0.0:
+                    Q_mirror = _bilinear_interp(Q_np, xm, ym, xc_np, yc_np)
+                    rho_m_val = Q_mirror[0]
+                    rho_m = rho_m_val if rho_m_val > 1e-6 else rho_inf
+                    u_m = Q_mirror[1] / rho_m
+                    v_m = Q_mirror[2] / rho_m
+                    p_m_val = (gas.GAMMA - 1.0) * (Q_mirror[3] - 0.5 * rho_m * (u_m**2 + v_m**2))
+                    p_m = p_m_val if p_m_val > 1e-6 else p_inf
+                else:
+                    # Mirror in ghost region: fall back to freestream thermo
+                    rho_m = rho_inf
+                    u_m = 0.0
+                    v_m = 0.0
+                    p_m = p_inf
 
                 # Reflect velocity: ghost = 2*v_body - v_mirror
                 u_ghost = 2.0 * v_body[0] - u_m
@@ -233,21 +250,16 @@ def fill_ghost_cells(
                 Q_np[2, i, j] = rho_m * v_ghost
                 Q_np[3, i, j] = p_m / (gas.GAMMA - 1.0) + 0.5 * rho_m * (u_ghost**2 + v_ghost**2)
             else:
-                # Deep interior: set to body velocity, ambient density/pressure
-                # Sample freestream from a corner cell (guaranteed fluid)
-                rho_ref = float(Q_np[0, 0, 0])
-                # p from energy: E_corner = p/((g-1)) + 0.5*rho*|v|^2
-                u_corner = Q_np[1, 0, 0] / max(rho_ref, 1e-6)
-                v_corner = Q_np[2, 0, 0] / max(rho_ref, 1e-6)
-                ke_corner = 0.5 * rho_ref * (u_corner**2 + v_corner**2)
-                p_ref = float(max((gas.GAMMA - 1.0) * (Q_np[3, 0, 0] - ke_corner), 1e-6))
+                # Deep interior ghost cell: use freestream thermodynamics (rho_inf, p_inf)
+                # passed in by the caller — NOT sampled from a corner cell, which may be
+                # in the post-shock region and would introduce a systematic bias.
                 u_ghost = v_body[0]
                 v_ghost = v_body[1]
-                Q_np[0, i, j] = rho_ref
-                Q_np[1, i, j] = rho_ref * u_ghost
-                Q_np[2, i, j] = rho_ref * v_ghost
-                ke_ghost = 0.5 * rho_ref * (u_ghost**2 + v_ghost**2)
-                Q_np[3, i, j] = p_ref / (gas.GAMMA - 1.0) + ke_ghost
+                Q_np[0, i, j] = rho_inf
+                Q_np[1, i, j] = rho_inf * u_ghost
+                Q_np[2, i, j] = rho_inf * v_ghost
+                ke_ghost = 0.5 * rho_inf * (u_ghost**2 + v_ghost**2)
+                Q_np[3, i, j] = p_inf / (gas.GAMMA - 1.0) + ke_ghost
 
     # NaN/Inf guard
     Q_np = np.where(np.isfinite(Q_np), Q_np, 0.0)
@@ -255,6 +267,47 @@ def fill_ghost_cells(
 
     # Convert back to backend array
     return xp.array(Q_np)  # type: ignore[no-any-return]
+
+
+def _interp_scalar(
+    f: np.ndarray, x: float, y: float, xc: np.ndarray, yc: np.ndarray
+) -> float:
+    """Bilinear interpolation of a scalar field f at (x, y).
+
+    Convenience wrapper around the same logic as _bilinear_interp but for
+    a 2D scalar field (ni, nj) rather than a (4, ni, nj) conservative state.
+
+    Args:
+        f: scalar field, shape (ni, nj)
+        x, y: query point
+        xc, yc: cell centers, shape (ni, nj)
+
+    Returns:
+        interpolated scalar value
+    """
+    ni, nj = xc.shape
+    dx = xc[1, 0] - xc[0, 0] if ni > 1 else 1.0
+    dy = yc[0, 1] - yc[0, 0] if nj > 1 else 1.0
+
+    i = int((x - xc[0, 0]) / dx)
+    j = int((y - yc[0, 0]) / dy)
+    i = max(0, min(i, ni - 2))
+    j = max(0, min(j, nj - 2))
+
+    x0 = xc[i, j]
+    y0 = yc[i, j]
+    x1 = xc[i + 1, j]
+    y1 = yc[i, j + 1]
+
+    wx = np.clip((x - x0) / (x1 - x0 + EPS_TINY), 0.0, 1.0)
+    wy = np.clip((y - y0) / (y1 - y0 + EPS_TINY), 0.0, 1.0)
+
+    return float(
+        (1 - wx) * (1 - wy) * f[i, j]
+        + wx * (1 - wy) * f[i + 1, j]
+        + (1 - wx) * wy * f[i, j + 1]
+        + wx * wy * f[i + 1, j + 1]
+    )
 
 
 def _bilinear_interp(
