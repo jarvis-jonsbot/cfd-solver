@@ -252,15 +252,20 @@ def compute_residual(Q, grid: Grid, phi=None) -> object:
     if n_efaces >= 2:
         R[:, :, 2 : 2 + n_efaces - 1] -= G_eta[:, :, 1:] - G_eta[:, :, :-1]
 
-    # Also handle first-order flux at wall-adjacent cells (j=1) using
-    # direct first-order Roe flux between j=0 (ghost) and j=1
-    # This ensures the wall BC propagates into the domain
-    nx_w = grid.eta_x_area[:, 0]
-    ny_w = grid.eta_y_area[:, 0]
-    F_wall = roe_flux_1d(Q_xp[:, :, 0:1], Q_xp[:, :, 1:2], nx_w[:, None], ny_w[:, None])
-    # Cell j=1: left face is wall face, right face is G_eta[:,:,0] (if it exists)
-    if n_efaces >= 1:
-        R[:, :, 1:2] -= G_eta[:, :, 0:1] - F_wall[:, :, 0:1]
+    # Apply wall flux at the inner boundary (j=0 → j=1) for O-grid mode only.
+    # In O-grid mode j=0 is the cylinder wall surface and needs an explicit Roe
+    # flux to propagate the wall BC into the domain.
+    # In Cartesian/rigid-body mode (phi is provided), j=0 is the bottom edge of the
+    # domain and should be treated symmetrically with the top edge (j=nj-1) — both
+    # are open far-field boundaries. Applying a wall flux only at the bottom creates
+    # an artificial asymmetry (downward pressure bias) that breaks y-symmetry.
+    if phi is None:
+        nx_w = grid.eta_x_area[:, 0]
+        ny_w = grid.eta_y_area[:, 0]
+        F_wall = roe_flux_1d(Q_xp[:, :, 0:1], Q_xp[:, :, 1:2], nx_w[:, None], ny_w[:, None])
+        # Cell j=1: left face is wall face, right face is G_eta[:,:,0] (if it exists)
+        if n_efaces >= 1:
+            R[:, :, 1:2] -= G_eta[:, :, 0:1] - F_wall[:, :, 0:1]
 
     # Divide by cell volume (|J|)
     R /= xp.abs(grid.jacobian[None, :, :]) + EPS_TINY
