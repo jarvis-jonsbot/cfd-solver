@@ -60,9 +60,9 @@ def sl_advect(Q, grid: Grid, dt, phi=None):
     x_mid = x - 0.5 * dt * u
     y_mid = y - 0.5 * dt * v
 
-    # Interpolate velocity at midpoint (exclude ghost cells from stencil)
-    u_mid = _interpolate_field(u, x_mid, y_mid, grid, phi=phi)
-    v_mid = _interpolate_field(v, x_mid, y_mid, grid, phi=phi)
+    # Interpolate velocity at midpoint
+    u_mid = _interpolate_field(u, x_mid, y_mid, grid)
+    v_mid = _interpolate_field(v, x_mid, y_mid, grid)
 
     # Step 2: Full step using midpoint velocity
     x_foot = x - dt * u_mid
@@ -71,7 +71,7 @@ def sl_advect(Q, grid: Grid, dt, phi=None):
     # --- Interpolate all conservative variables at foot points ---
     Q_sl = xp.zeros_like(Q)
     for eq in range(4):
-        Q_sl[eq] = _interpolate_field(Q[eq], x_foot, y_foot, grid, phi=phi)
+        Q_sl[eq] = _interpolate_field(Q[eq], x_foot, y_foot, grid)
 
     return Q_sl
 
@@ -84,11 +84,7 @@ def _interpolate_field(f, x_target, y_target, grid: Grid, phi=None):
         x_target: target x-coordinates, shape (ni, nj)
         y_target: target y-coordinates, shape (ni, nj)
         grid: Grid object
-        phi: optional level set, shape (ni, nj). When provided, ghost cells
-             (phi < 0) are excluded from the IDW stencil. If all 4 stencil
-             points are ghost cells, falls back to using all 4 (unavoidable
-             deep interior case, but this is handled by ghost cell masking
-             in csl_advect).
+        phi: reserved for future ghost-cell-aware interpolation (unused)
 
     Returns:
         f_interp: interpolated field, shape (ni, nj)
@@ -97,8 +93,7 @@ def _interpolate_field(f, x_target, y_target, grid: Grid, phi=None):
         - Periodic in ξ (i) direction
         - Clamped in η (j) direction
         - Uses inverse-distance weighting with the 4 nearest neighbors
-        - On uniform Cartesian grids this reduces to bilinear interpolation
-          when all 4 stencil points are in the fluid
+        - On uniform Cartesian grids this reduces to exact bilinear interpolation
     """
     ni, nj = grid.ni, grid.nj
 
@@ -110,7 +105,6 @@ def _interpolate_field(f, x_target, y_target, grid: Grid, phi=None):
     f_np = np.array(f)
     x_tgt_np = np.array(x_target)
     y_tgt_np = np.array(y_target)
-    phi_np = np.array(phi) if phi is not None else None
 
     f_interp_np = np.zeros_like(f_np)
 
@@ -137,22 +131,6 @@ def _interpolate_field(f, x_target, y_target, grid: Grid, phi=None):
                 min(nj - 1, j0 + 1),
                 min(nj - 1, j0 + 1),
             ]
-
-            # Filter out ghost cells from the stencil when phi is provided.
-            # Ghost cells carry reflected velocities — including them in the
-            # IDW stencil contaminates fluid cells adjacent to the interface
-            # and breaks the y-symmetry of symmetric flow problems.
-            if phi_np is not None:
-                fluid_stencil = [
-                    (ii, jj)
-                    for ii, jj in zip(i_stencil, j_stencil)
-                    if phi_np[ii, jj] >= 0.0
-                ]
-                if fluid_stencil:
-                    i_stencil = [s[0] for s in fluid_stencil]
-                    j_stencil = [s[1] for s in fluid_stencil]
-                # else: all stencil points are ghost (deep interior) — use all 4,
-                # conservative_correction will mask the result anyway
 
             # Inverse distance weighting
             weights = []
