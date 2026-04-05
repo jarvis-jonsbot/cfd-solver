@@ -75,7 +75,7 @@ def animate_fsi(input_dir: str, output: str, field: str = "pressure", fps: int =
     for f in files[:: max(1, len(files) // 20)]:
         Q = np.load(f)["Q"]
         val = compute_field(Q)
-        sample_vals.append(val.ravel())
+        sample_vals.append(val.ravel())  # ravel for vmin/vmax sampling only
     all_vals = np.concatenate(sample_vals)
     vmin = float(np.nanpercentile(all_vals, 2))
     vmax = float(np.nanpercentile(all_vals, 98))
@@ -85,7 +85,10 @@ def animate_fsi(input_dir: str, output: str, field: str = "pressure", fps: int =
     fig.tight_layout(pad=1.5)
 
     val0 = compute_field(Q0)
-    im = ax.pcolormesh(x, y, val0, vmin=vmin, vmax=vmax, cmap=cmap, shading="auto")
+    # x,y are (ni,nj)=(128,64): axis-0 is x-direction, axis-1 is y-direction.
+    # pcolormesh expects (ny, nx) arrays; transpose everything.
+    # Use shading='gouraud' since coordinates are cell centers, not edges.
+    im = ax.pcolormesh(x[:, 0], y[0, :], val0.T, vmin=vmin, vmax=vmax, cmap=cmap, shading="gouraud")
     plt.colorbar(im, ax=ax, label=field_label, fraction=0.046, pad=0.04)
 
     t0 = float(d0["t"][0]) if "t" in d0 else 0.0
@@ -109,7 +112,7 @@ def animate_fsi(input_dir: str, output: str, field: str = "pressure", fps: int =
         t = float(data["t"][0]) if "t" in data else frame_idx * 0.01
 
         val = compute_field(Q)
-        im.set_array(val.ravel())
+        im.set_array(val.T.ravel())
 
         # Update body position from trajectory
         if traj is not None:
