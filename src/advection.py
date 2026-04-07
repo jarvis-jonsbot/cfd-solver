@@ -61,8 +61,8 @@ def sl_advect(Q, grid: Grid, dt, phi=None):
     y_mid = y - 0.5 * dt * v
 
     # Interpolate velocity at midpoint
-    u_mid = _interpolate_field(u, x_mid, y_mid, grid)
-    v_mid = _interpolate_field(v, x_mid, y_mid, grid)
+    u_mid = _interpolate_field(u, x_mid, y_mid, grid, phi=phi)
+    v_mid = _interpolate_field(v, x_mid, y_mid, grid, phi=phi)
 
     # Step 2: Full step using midpoint velocity
     x_foot = x - dt * u_mid
@@ -71,7 +71,7 @@ def sl_advect(Q, grid: Grid, dt, phi=None):
     # --- Interpolate all conservative variables at foot points ---
     Q_sl = xp.zeros_like(Q)
     for eq in range(4):
-        Q_sl[eq] = _interpolate_field(Q[eq], x_foot, y_foot, grid)
+        Q_sl[eq] = _interpolate_field(Q[eq], x_foot, y_foot, grid, phi=phi)
 
     return Q_sl
 
@@ -84,7 +84,9 @@ def _interpolate_field(f, x_target, y_target, grid: Grid, phi=None):
         x_target: target x-coordinates, shape (ni, nj)
         y_target: target y-coordinates, shape (ni, nj)
         grid: Grid object
-        phi: reserved for future ghost-cell-aware interpolation (unused)
+        phi: optional level set, shape (ni, nj). phi < 0 inside body.
+             When provided, ghost cells are excluded from the bilinear stencil
+             by zeroing their weights and renormalizing.
 
     Returns:
         f_interp: interpolated field, shape (ni, nj)
@@ -92,8 +94,8 @@ def _interpolate_field(f, x_target, y_target, grid: Grid, phi=None):
     Notes:
         - Periodic in ξ (i) direction
         - Clamped in η (j) direction
-        - Uses inverse-distance weighting with the 4 nearest neighbors
-        - On uniform Cartesian grids this reduces to exact bilinear interpolation
+        - Uses exact bilinear interpolation (floor-based cell finding)
+        - Ghost cells (phi < 0) are masked when phi is provided
     """
     ni, nj = grid.ni, grid.nj
 
@@ -106,47 +108,75 @@ def _interpolate_field(f, x_target, y_target, grid: Grid, phi=None):
     x_tgt_np = np.array(x_target)
     y_tgt_np = np.array(y_target)
 
+    phi_np = None
+    if phi is not None:
+        phi_np = np.array(phi)
+
     f_interp_np = np.zeros_like(f_np)
+
+    # Grid spacing (assume uniform Cartesian)
+    dx_g = x_np[1, 0] - x_np[0, 0] if ni > 1 else 1.0
+    dy_g = y_np[0, 1] - y_np[0, 0] if nj > 1 else 1.0
 
     for i in range(ni):
         for j in range(nj):
             x_tgt = x_tgt_np[i, j]
             y_tgt = y_tgt_np[i, j]
 
-            # Find nearest cell center in index space
-            dist = (x_np - x_tgt) ** 2 + (y_np - y_tgt) ** 2
-            i0_flat = np.argmin(dist)
-            i0, j0 = np.unravel_index(i0_flat, (ni, nj))
+            # Floor-based cell finding (O(1), exactly like levelset.py)
+            i0 = int((x_tgt - x_np[0, 0]) / dx_g)
+            j0 = int((y_tgt - y_np[0, 0]) / dy_g)
+            i0 = max(0, min(i0, ni - 2))
+            j0 = max(0, min(j0, nj - 2))
 
-            # Get 4-cell stencil around nearest center (periodic in i, clamped in j)
-            i_stencil = [
-                i0 % ni,
-                (i0 + 1) % ni,
-                i0 % ni,
-                (i0 + 1) % ni,
-            ]
-            j_stencil = [
-                max(0, j0),
-                max(0, j0),
-                min(nj - 1, j0 + 1),
-                min(nj - 1, j0 + 1),
-            ]
+            x0, y0 = x_np[i0, j0], y_np[i0, j0]
+            x1, y1 = x_np[i0 + 1, j0], y_np[i0, j0 + 1]
 
-            # Inverse distance weighting
-            weights = []
-            for ii, jj in zip(i_stencil, j_stencil):
-                dx = x_tgt - x_np[ii, jj]
-                dy = y_tgt - y_np[ii, jj]
-                d = np.sqrt(dx * dx + dy * dy) + 1e-10  # regularize
-                weights.append(1.0 / d)
+            wx = np.clip((x_tgt - x0) / (x1 - x0 + 1e-30), 0.0, 1.0)
+            wy = np.clip((y_tgt - y0) / (y1 - y0 + 1e-30), 0.0, 1.0)
 
-            weights = np.array(weights)
-            weights /= weights.sum()  # normalize
+            # Bilinear interpolation with ghost cell masking
+            if phi_np is not None:
+                # Build weights array for the 4 corners
+                w = np.array(
+                    [
+                        (1 - wx) * (1 - wy),  # [i0, j0]
+                        wx * (1 - wy),  # [i0+1, j0]
+                        (1 - wx) * wy,  # [i0, j0+1]
+                        wx * wy,  # [i0+1, j0+1]
+                    ]
+                )
+                corners = [(i0, j0), (i0 + 1, j0), (i0, j0 + 1), (i0 + 1, j0 + 1)]
 
-            # Weighted sum
-            val = 0.0
-            for k, (ii, jj) in enumerate(zip(i_stencil, j_stencil)):
-                val += weights[k] * f_np[ii, jj]
+                # Zero out weights for ghost cells
+                for k, (ii, jj) in enumerate(corners):
+                    if phi_np[ii, jj] < 0:
+                        w[k] = 0.0
+
+                # Renormalize weights
+                w_sum = w.sum()
+                if w_sum > 1e-30:
+                    w /= w_sum
+                else:
+                    # All corners are ghost cells — use nearest valid fluid cell
+                    # or fall back to zero (this should rarely happen in practice)
+                    w = np.array([0.25, 0.25, 0.25, 0.25])
+
+                # Weighted sum
+                val = (
+                    w[0] * f_np[i0, j0]
+                    + w[1] * f_np[i0 + 1, j0]
+                    + w[2] * f_np[i0, j0 + 1]
+                    + w[3] * f_np[i0 + 1, j0 + 1]
+                )
+            else:
+                # Standard bilinear interpolation (no ghost cell masking)
+                val = (
+                    (1 - wx) * (1 - wy) * f_np[i0, j0]
+                    + wx * (1 - wy) * f_np[i0 + 1, j0]
+                    + (1 - wx) * wy * f_np[i0, j0 + 1]
+                    + wx * wy * f_np[i0 + 1, j0 + 1]
+                )
 
             f_interp_np[i, j] = val
 
@@ -361,6 +391,9 @@ def _advect_first_order_flux(Q, grid: Grid, dt, phi=None):
                 Q_new_np[eq, i, j] -= dt / Jk * (F_p - F_m)
 
     # η-direction sweep (clamped)
+    # NOTE: At domain boundaries (j=0, j=nj-1), j_m or j_p clamps to the current cell.
+    # This produces a zero-gradient (Neumann) BC: U_eta at the boundary face is the
+    # cell-center value (self-average). This is intentional for the CSL reference flux.
     for i in range(ni):
         for j in range(nj):
             # Skip ghost cells
