@@ -32,6 +32,8 @@ class SolverConfig:
     print_interval: int = 100
     output_interval: int = 1000
     output_dir: str = "output"
+    use_csl: bool = False  # use Conservative Semi-Lagrangian advection
+    use_hybrid: bool = False  # use hybrid CSL/MUSCL with shock detection
 
 
 def compute_dt(Q, grid: Grid, cfl: float, phi=None) -> float:
@@ -198,8 +200,8 @@ def compute_residual(Q, grid: Grid, phi=None) -> object:
             E_ambient = rho_ambient / 0.4  # p=rho*(gamma-1)*E/rho, p≈rho for M~1
             Q_safe = Q_np.copy()
             Q_safe[0, ghost_mask] = rho_ambient
-            Q_safe[1, ghost_mask] = 0.0   # zero x-momentum
-            Q_safe[2, ghost_mask] = 0.0   # zero y-momentum
+            Q_safe[1, ghost_mask] = 0.0  # zero x-momentum
+            Q_safe[2, ghost_mask] = 0.0  # zero y-momentum
             Q_safe[3, ghost_mask] = E_ambient
             Q_xp = xp.array(Q_safe)
         else:
@@ -250,15 +252,20 @@ def compute_residual(Q, grid: Grid, phi=None) -> object:
     if n_efaces >= 2:
         R[:, :, 2 : 2 + n_efaces - 1] -= G_eta[:, :, 1:] - G_eta[:, :, :-1]
 
-    # Also handle first-order flux at wall-adjacent cells (j=1) using
-    # direct first-order Roe flux between j=0 (ghost) and j=1
-    # This ensures the wall BC propagates into the domain
-    nx_w = grid.eta_x_area[:, 0]
-    ny_w = grid.eta_y_area[:, 0]
-    F_wall = roe_flux_1d(Q_xp[:, :, 0:1], Q_xp[:, :, 1:2], nx_w[:, None], ny_w[:, None])
-    # Cell j=1: left face is wall face, right face is G_eta[:,:,0] (if it exists)
-    if n_efaces >= 1:
-        R[:, :, 1:2] -= G_eta[:, :, 0:1] - F_wall[:, :, 0:1]
+    # Apply wall flux at the inner boundary (j=0 → j=1) for O-grid mode only.
+    # In O-grid mode j=0 is the cylinder wall surface and needs an explicit Roe
+    # flux to propagate the wall BC into the domain.
+    # In Cartesian/rigid-body mode (phi is provided), j=0 is the bottom edge of the
+    # domain and should be treated symmetrically with the top edge (j=nj-1) — both
+    # are open far-field boundaries. Applying a wall flux only at the bottom creates
+    # an artificial asymmetry (downward pressure bias) that breaks y-symmetry.
+    if phi is None:
+        nx_w = grid.eta_x_area[:, 0]
+        ny_w = grid.eta_y_area[:, 0]
+        F_wall = roe_flux_1d(Q_xp[:, :, 0:1], Q_xp[:, :, 1:2], nx_w[:, None], ny_w[:, None])
+        # Cell j=1: left face is wall face, right face is G_eta[:,:,0] (if it exists)
+        if n_efaces >= 1:
+            R[:, :, 1:2] -= G_eta[:, :, 0:1] - F_wall[:, :, 0:1]
 
     # Divide by cell volume (|J|)
     R /= xp.abs(grid.jacobian[None, :, :]) + EPS_TINY
@@ -454,7 +461,18 @@ def step_semi_implicit(Q, dt, grid: Grid, bcs=None):
     return Q_new
 
 
-def step_partitioned_fsi(Q, body, grid: Grid, gas, dt, fluid_integrator="rk4"):
+def step_partitioned_fsi(
+    Q,
+    body,
+    grid: Grid,
+    gas,
+    dt,
+    fluid_integrator="rk4",
+    use_csl=False,
+    use_hybrid=False,
+    rho_inf: float = 1.0,
+    p_inf: float = 1.0,
+):
     """One partitioned FSI time step: fluid forces → body motion → fluid update.
 
     Partitioned (explicitly sequential) coupling:
@@ -471,7 +489,11 @@ def step_partitioned_fsi(Q, body, grid: Grid, gas, dt, fluid_integrator="rk4"):
         grid: Grid object (Cartesian)
         gas: gas module for EOS
         dt: time step
-        fluid_integrator: "rk4" or "semi_implicit"
+        fluid_integrator: "rk4" or "semi_implicit" (ignored if use_csl or use_hybrid is True)
+        use_csl: if True, use Conservative Semi-Lagrangian advection
+        use_hybrid: if True, use hybrid CSL/MUSCL with shock detection
+        rho_inf: freestream density, used to seed deep ghost cells (default 1.0)
+        p_inf: freestream pressure, used to seed deep ghost cells (default 1.0)
 
     Returns:
         Q_new: updated fluid state, shape (4, ni, nj)
@@ -490,7 +512,7 @@ def step_partitioned_fsi(Q, body, grid: Grid, gas, dt, fluid_integrator="rk4"):
 
     # --- Step 1: Compute phi, fill ghost cells ---
     phi = compute_levelset(body, xc_np, yc_np)
-    Q = fill_ghost_cells(Q, phi, body, xc_np, yc_np, gas)
+    Q = fill_ghost_cells(Q, phi, body, xc_np, yc_np, gas, rho_inf=rho_inf, p_inf=p_inf)
 
     # --- Step 2: Compute forces on body ---
     F, tau = compute_interface_forces(Q, phi, body, xc_np, yc_np, gas)
@@ -500,10 +522,20 @@ def step_partitioned_fsi(Q, body, grid: Grid, gas, dt, fluid_integrator="rk4"):
 
     # --- Step 4: Recompute phi at new position, refill ghost cells ---
     phi_new = compute_levelset(body_new, xc_np, yc_np)
-    Q = fill_ghost_cells(Q, phi_new, body_new, xc_np, yc_np, gas)
+    Q = fill_ghost_cells(Q, phi_new, body_new, xc_np, yc_np, gas, rho_inf=rho_inf, p_inf=p_inf)
 
     # --- Step 5: Advance fluid ---
-    if fluid_integrator == "semi_implicit":
+    if use_hybrid:
+        # Hybrid CSL/MUSCL with shock detection
+        from src.advection import hybrid_advect
+
+        Q_new = hybrid_advect(Q, grid, dt, use_csl=True, phi=phi_new)
+    elif use_csl:
+        # Pure CSL advection with ghost cell masking
+        from src.advection import csl_advect
+
+        Q_new = csl_advect(Q, grid, dt, phi=phi_new)
+    elif fluid_integrator == "semi_implicit":
         Q_new = step_semi_implicit(Q, dt, grid)
     else:
         # Single RK4 step — pass phi_new so compute_residual can degrade MUSCL
@@ -511,27 +543,27 @@ def step_partitioned_fsi(Q, body, grid: Grid, gas, dt, fluid_integrator="rk4"):
         # from the large velocity jump across the immersed boundary).
         k1 = compute_residual(Q, grid, phi=phi_new)
         Q1 = Q + 0.5 * dt * k1
-        Q1 = fill_ghost_cells(Q1, phi_new, body_new, xc_np, yc_np, gas)
+        Q1 = fill_ghost_cells(Q1, phi_new, body_new, xc_np, yc_np, gas, rho_inf=rho_inf, p_inf=p_inf)
 
         k2 = compute_residual(Q1, grid, phi=phi_new)
         Q2 = Q + 0.5 * dt * k2
-        Q2 = fill_ghost_cells(Q2, phi_new, body_new, xc_np, yc_np, gas)
+        Q2 = fill_ghost_cells(Q2, phi_new, body_new, xc_np, yc_np, gas, rho_inf=rho_inf, p_inf=p_inf)
 
         k3 = compute_residual(Q2, grid, phi=phi_new)
         Q3 = Q + dt * k3
-        Q3 = fill_ghost_cells(Q3, phi_new, body_new, xc_np, yc_np, gas)
+        Q3 = fill_ghost_cells(Q3, phi_new, body_new, xc_np, yc_np, gas, rho_inf=rho_inf, p_inf=p_inf)
 
         k4 = compute_residual(Q3, grid, phi=phi_new)
         Q_new = Q + (dt / 6.0) * (k1 + 2.0 * k2 + 2.0 * k3 + k4)
 
     # Final ghost cell fill
-    Q_new = fill_ghost_cells(Q_new, phi_new, body_new, xc_np, yc_np, gas)
+    Q_new = fill_ghost_cells(Q_new, phi_new, body_new, xc_np, yc_np, gas, rho_inf=rho_inf, p_inf=p_inf)
 
     return Q_new, body_new
 
 
 def solve(Q0, grid: Grid, config: SolverConfig, callback: Callable | None = None) -> object:
-    """Run the solver with RK4 time integration.
+    """Run the solver with RK4 time integration or CSL advection.
 
     Args:
         Q0: initial conservative state, shape (4, ni, nj)
@@ -545,6 +577,10 @@ def solve(Q0, grid: Grid, config: SolverConfig, callback: Callable | None = None
     Q = xp.array(Q0)
     t = 0.0
 
+    # Import CSL advection if needed
+    if config.use_csl or config.use_hybrid:
+        from src.advection import csl_advect, hybrid_advect
+
     for step in range(1, config.max_steps + 1):
         # Apply boundary conditions
         apply_wall(Q, grid)
@@ -553,25 +589,34 @@ def solve(Q0, grid: Grid, config: SolverConfig, callback: Callable | None = None
         # Compute stable time step
         dt = compute_dt(Q, grid, config.cfl)
 
-        # RK4 stages
-        k1 = compute_residual(Q, grid)
-        Q1 = Q + 0.5 * dt * k1
-        apply_wall(Q1, grid)
-        apply_freestream(Q1, grid, config.mach, config.alpha, config.p_inf, config.rho_inf)
+        # Choose advection method
+        if config.use_hybrid:
+            # Hybrid CSL/MUSCL with shock detection
+            Q = hybrid_advect(Q, grid, dt, use_csl=True)
+        elif config.use_csl:
+            # Pure CSL advection
+            Q = csl_advect(Q, grid, dt)
+        else:
+            # Standard RK4 with MUSCL+Roe
+            k1 = compute_residual(Q, grid)
+            Q1 = Q + 0.5 * dt * k1
+            apply_wall(Q1, grid)
+            apply_freestream(Q1, grid, config.mach, config.alpha, config.p_inf, config.rho_inf)
 
-        k2 = compute_residual(Q1, grid)
-        Q2 = Q + 0.5 * dt * k2
-        apply_wall(Q2, grid)
-        apply_freestream(Q2, grid, config.mach, config.alpha, config.p_inf, config.rho_inf)
+            k2 = compute_residual(Q1, grid)
+            Q2 = Q + 0.5 * dt * k2
+            apply_wall(Q2, grid)
+            apply_freestream(Q2, grid, config.mach, config.alpha, config.p_inf, config.rho_inf)
 
-        k3 = compute_residual(Q2, grid)
-        Q3 = Q + dt * k3
-        apply_wall(Q3, grid)
-        apply_freestream(Q3, grid, config.mach, config.alpha, config.p_inf, config.rho_inf)
+            k3 = compute_residual(Q2, grid)
+            Q3 = Q + dt * k3
+            apply_wall(Q3, grid)
+            apply_freestream(Q3, grid, config.mach, config.alpha, config.p_inf, config.rho_inf)
 
-        k4 = compute_residual(Q3, grid)
+            k4 = compute_residual(Q3, grid)
 
-        Q = Q + (dt / 6.0) * (k1 + 2.0 * k2 + 2.0 * k3 + k4)
+            Q = Q + (dt / 6.0) * (k1 + 2.0 * k2 + 2.0 * k3 + k4)
+
         t += dt
 
         if step % config.print_interval == 0:
@@ -580,8 +625,9 @@ def solve(Q0, grid: Grid, config: SolverConfig, callback: Callable | None = None
             rho_max = float(xp.max(Q[0, :, 1:-1]))
             p_min = float(xp.min(p[:, 1:-1]))
             p_max = float(xp.max(p[:, 1:-1]))
+            mode = "HYBRID" if config.use_hybrid else ("CSL" if config.use_csl else "RK4")
             print(
-                f"Step {step:6d}  t={t:.6f}  dt={dt:.2e}  "
+                f"[{mode}] Step {step:6d}  t={t:.6f}  dt={dt:.2e}  "
                 f"rho=[{rho_min:.4f}, {rho_max:.4f}]  "
                 f"p=[{p_min:.4f}, {p_max:.4f}]"
             )
