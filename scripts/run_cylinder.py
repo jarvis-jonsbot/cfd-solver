@@ -80,9 +80,9 @@ def main():
     if args.rigid_body:
         print("[Rigid Body FSI Mode] Free cylinder, shock hit at Mach 3")
         if args.csl or args.hybrid:
-            print("[WARNING] CSL/hybrid advection with immersed boundaries: SL backtracing")
-            print("  crosses the interface and is unstable at Mach 3 shock impact.")
-            print("  Recommend using RK4 (default) for rigid-body mode.")
+            print("[CSL with Immersed Boundaries] Ghost-cell masking active to prevent")
+            print("  SL backtracing contamination across the interface. Stable with phi-aware")
+            print("  bilinear interpolation (as of 2026-04-07 bug fixes).")
     if args.hybrid:
         print("[Hybrid CSL/MUSCL] Shock-adaptive advection with high-CFL stability")
     elif args.csl:
